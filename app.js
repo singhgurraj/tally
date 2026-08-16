@@ -33,6 +33,10 @@ const detailDecrementEl = document.getElementById("detail-decrement");
 const historyListEl = document.getElementById("history-list");
 const historyEmptyEl = document.getElementById("history-empty");
 const backLinkEl = document.getElementById("back-link");
+const deleteBtnEl = document.getElementById("delete-counter-btn");
+const deleteConfirmEl = document.getElementById("delete-confirm");
+const deleteCancelBtnEl = document.getElementById("delete-cancel-btn");
+const deleteConfirmBtnEl = document.getElementById("delete-confirm-btn");
 
 function sanitizeCounter(raw) {
   if (!raw || typeof raw !== "object") return null;
@@ -194,6 +198,9 @@ function renderDetail(id) {
   detailNameEl.textContent = counter.name;
   detailCountEl.textContent = counter.count;
   renderHistory(counter);
+
+  deleteBtnEl.hidden = false;
+  deleteConfirmEl.hidden = true;
 }
 
 function updateDetailCount(counter) {
@@ -242,7 +249,9 @@ listEl.addEventListener("click", (e) => {
 
   if (e.target.closest(".increment")) changeCount(id, 1);
   else if (e.target.closest(".decrement")) changeCount(id, -1);
-  else if (e.target.closest(".remove")) removeCounter(id);
+  else if (e.target.closest(".remove")) li.classList.add("confirming");
+  else if (e.target.closest(".confirm-cancel-btn")) li.classList.remove("confirming");
+  else if (e.target.closest(".confirm-delete-btn")) removeCounter(id);
   // .counter-name is a plain <a href="#/counter/..."> — let it navigate natively.
 });
 
@@ -258,6 +267,22 @@ detailDecrementEl.addEventListener("click", () => {
 
 backLinkEl.addEventListener("click", (e) => {
   e.preventDefault();
+  location.hash = "";
+});
+
+deleteBtnEl.addEventListener("click", () => {
+  deleteBtnEl.hidden = true;
+  deleteConfirmEl.hidden = false;
+});
+
+deleteCancelBtnEl.addEventListener("click", () => {
+  deleteConfirmEl.hidden = true;
+  deleteBtnEl.hidden = false;
+});
+
+deleteConfirmBtnEl.addEventListener("click", () => {
+  const { id } = currentRoute();
+  if (id) removeCounter(id);
   location.hash = "";
 });
 

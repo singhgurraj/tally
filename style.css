@@ -110,10 +110,6 @@ h1 {
 }
 
 .counter {
-  display: flex;
-  align-items: center;
-  gap: 0.75rem;
-  padding: 0.85rem 1.1rem;
   background: var(--surface);
   border: 1px solid var(--border);
   border-radius: 14px;
@@ -124,6 +120,26 @@ h1 {
 .counter:hover {
   box-shadow: var(--shadow-hover);
   transform: translateY(-1px);
+}
+
+.counter-main {
+  display: flex;
+  align-items: center;
+  gap: 0.75rem;
+  padding: 0.85rem 1.1rem;
+}
+
+.counter-confirm {
+  display: none;
+  padding: 0.85rem 1.1rem;
+}
+
+.counter.confirming .counter-main {
+  display: none;
+}
+
+.counter.confirming .counter-confirm {
+  display: flex;
 }
 
 .counter-dot {
@@ -257,6 +273,66 @@ h1 {
 #empty-state p {
   margin: 0;
   line-height: 1.5;
+}
+
+/* Delete confirmation */
+
+.confirm-bar {
+  align-items: center;
+  gap: 0.6rem;
+  animation: fade-in 150ms ease;
+}
+
+@keyframes fade-in {
+  from {
+    opacity: 0;
+  }
+  to {
+    opacity: 1;
+  }
+}
+
+.confirm-text {
+  flex: 1;
+  color: var(--muted);
+  font-size: 0.875rem;
+  line-height: 1.4;
+}
+
+.confirm-cancel-btn,
+.confirm-delete-btn {
+  border: none;
+  border-radius: 8px;
+  padding: 0.45rem 0.85rem;
+  font-size: 0.875rem;
+  font-weight: 600;
+  cursor: pointer;
+  white-space: nowrap;
+  transition: background 120ms ease, transform 80ms ease;
+}
+
+.confirm-cancel-btn {
+  border: 1px solid var(--border);
+  background: var(--bg);
+  color: var(--text);
+}
+
+.confirm-cancel-btn:hover {
+  background: var(--border);
+}
+
+.confirm-delete-btn {
+  background: var(--danger);
+  color: white;
+}
+
+.confirm-delete-btn:hover {
+  background: #b91c1c;
+}
+
+.confirm-cancel-btn:active,
+.confirm-delete-btn:active {
+  transform: scale(0.95);
 }
 
 #storage-warning {
@@ -405,4 +481,35 @@ h1 {
   padding: 2rem 1rem;
   border: 1.5px dashed var(--border);
   border-radius: 16px;
+}
+
+.detail-delete {
+  margin-top: 2.5rem;
+  padding-top: 1.5rem;
+  border-top: 1px solid var(--border);
+}
+
+.danger-outline-btn {
+  border: 1px solid var(--danger);
+  background: transparent;
+  color: var(--danger);
+  border-radius: 10px;
+  padding: 0.6rem 1rem;
+  font-size: 0.9rem;
+  font-weight: 600;
+  cursor: pointer;
+  transition: background 120ms ease, transform 80ms ease;
+}
+
+.danger-outline-btn:hover {
+  background: color-mix(in srgb, var(--danger) 12%, transparent);
+}
+
+.danger-outline-btn:active {
+  transform: scale(0.97);
+}
+
+.detail-delete .confirm-bar:not([hidden]) {
+  display: flex;
+  flex-wrap: wrap;
 }
