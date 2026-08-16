@@ -1,0 +1,11 @@
+{
+  "version": "0.0.1",
+  "configurations": [
+    {
+      "name": "tally",
+      "runtimeExecutable": "python3",
+      "runtimeArgs": ["-m", "http.server", "8842"],
+      "port": 8842
+    }
+  ]
+}

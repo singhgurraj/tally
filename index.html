@@ -1,0 +1,38 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>Tally</title>
+<link rel="stylesheet" href="style.css">
+</head>
+<body>
+  <main>
+    <header>
+      <h1>Tally</h1>
+      <form id="new-counter-form">
+        <input type="text" id="new-counter-name" placeholder="New counter name" required maxlength="60">
+        <button type="submit">Add</button>
+      </form>
+    </header>
+
+    <ul id="counter-list"></ul>
+
+    <p id="empty-state" hidden>No counters yet. Add one above.</p>
+  </main>
+
+  <template id="counter-template">
+    <li class="counter" data-id="">
+      <span class="counter-name"></span>
+      <div class="counter-controls">
+        <button class="decrement" aria-label="Decrement">&minus;</button>
+        <span class="counter-count">0</span>
+        <button class="increment" aria-label="Increment">+</button>
+      </div>
+      <button class="remove" aria-label="Remove counter">&times;</button>
+    </li>
+  </template>
+
+  <script src="app.js"></script>
+</body>
+</html>
