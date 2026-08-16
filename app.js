@@ -34,18 +34,47 @@ const historyListEl = document.getElementById("history-list");
 const historyEmptyEl = document.getElementById("history-empty");
 const backLinkEl = document.getElementById("back-link");
 
+function sanitizeCounter(raw) {
+  if (!raw || typeof raw !== "object") return null;
+
+  const id = typeof raw.id === "string" && raw.id ? raw.id : crypto.randomUUID();
+  const name = typeof raw.name === "string" ? raw.name : "";
+  const count = typeof raw.count === "number" && Number.isFinite(raw.count) ? raw.count : 0;
+  const history = Array.isArray(raw.history)
+    ? raw.history.filter(
+        (e) => e && typeof e.delta === "number" && typeof e.at === "number"
+      )
+    : [];
+
+  return { id, name, count, history };
+}
+
 function loadCounters() {
   try {
     const raw = localStorage.getItem(STORAGE_KEY);
-    const parsed = raw ? JSON.parse(raw) : [];
-    return parsed.map((c) => ({ history: [], ...c }));
-  } catch {
+    if (!raw) return [];
+    const parsed = JSON.parse(raw);
+    if (!Array.isArray(parsed)) return [];
+    return parsed.map(sanitizeCounter).filter(Boolean);
+  } catch (err) {
+    console.error("Tally: failed to load counters from localStorage", err);
     return [];
   }
 }
 
 function saveCounters() {
-  localStorage.setItem(STORAGE_KEY, JSON.stringify(counters));
+  try {
+    localStorage.setItem(STORAGE_KEY, JSON.stringify(counters));
+    setStorageWarning(false);
+  } catch (err) {
+    console.error("Tally: failed to save counters to localStorage", err);
+    setStorageWarning(true);
+  }
+}
+
+function setStorageWarning(show) {
+  const el = document.getElementById("storage-warning");
+  if (el) el.hidden = !show;
 }
 
 function accentFor(id) {
