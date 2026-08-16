@@ -138,6 +138,13 @@ h1 {
   flex: 1;
   font-weight: 500;
   overflow-wrap: anywhere;
+  color: inherit;
+  text-decoration: none;
+  cursor: pointer;
+}
+
+.counter-name:hover {
+  text-decoration: underline;
 }
 
 .counter-controls {
@@ -250,4 +257,141 @@ h1 {
 #empty-state p {
   margin: 0;
   line-height: 1.5;
+}
+
+/* Detail view */
+
+#back-link {
+  display: inline-block;
+  color: var(--muted);
+  text-decoration: none;
+  font-size: 0.9rem;
+  margin-bottom: 1.5rem;
+}
+
+#back-link:hover {
+  color: var(--text);
+}
+
+.detail-header {
+  display: flex;
+  align-items: center;
+  gap: 0.6rem;
+  margin-bottom: 1.5rem;
+}
+
+.counter-dot.large {
+  width: 14px;
+  height: 14px;
+  min-width: 14px;
+}
+
+#detail-name {
+  font-size: 1.5rem;
+  font-weight: 800;
+  letter-spacing: -0.02em;
+  margin: 0;
+  overflow-wrap: anywhere;
+}
+
+.detail-count-row {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  gap: 1.5rem;
+  padding: 1.75rem 1rem;
+  background: var(--surface);
+  border: 1px solid var(--border);
+  border-radius: 16px;
+  box-shadow: var(--shadow);
+  margin-bottom: 2rem;
+}
+
+.detail-count-row button {
+  width: 3rem;
+  height: 3rem;
+  border: 1px solid var(--border);
+  border-radius: 12px;
+  background: var(--bg);
+  color: var(--text);
+  font-size: 1.5rem;
+  line-height: 1;
+  cursor: pointer;
+  transition: background 120ms ease, transform 80ms ease;
+}
+
+.detail-count-row button:hover {
+  background: var(--border);
+}
+
+.detail-count-row button:active {
+  transform: scale(0.9);
+}
+
+#detail-count {
+  min-width: 3ch;
+  text-align: center;
+  font-size: 2.5rem;
+  font-weight: 800;
+  font-variant-numeric: tabular-nums;
+  display: inline-block;
+}
+
+#detail-count.pulse {
+  animation: pulse 220ms ease;
+}
+
+.history-heading {
+  font-size: 0.95rem;
+  font-weight: 700;
+  color: var(--muted);
+  text-transform: uppercase;
+  letter-spacing: 0.04em;
+  margin: 0 0 0.75rem;
+}
+
+#history-list {
+  list-style: none;
+  margin: 0;
+  padding: 0;
+  display: flex;
+  flex-direction: column;
+  gap: 0.4rem;
+}
+
+.history-entry {
+  display: flex;
+  align-items: center;
+  gap: 0.75rem;
+  padding: 0.6rem 0.9rem;
+  background: var(--surface);
+  border: 1px solid var(--border);
+  border-radius: 10px;
+}
+
+.history-delta {
+  font-weight: 700;
+  font-variant-numeric: tabular-nums;
+  min-width: 3ch;
+}
+
+.history-delta.positive {
+  color: #16a34a;
+}
+
+.history-delta.negative {
+  color: var(--danger);
+}
+
+.history-time {
+  color: var(--muted);
+  font-size: 0.875rem;
+}
+
+#history-empty {
+  color: var(--muted);
+  text-align: center;
+  padding: 2rem 1rem;
+  border: 1.5px dashed var(--border);
+  border-radius: 16px;
 }
