@@ -10,6 +10,7 @@
   <main>
     <header>
       <h1>Tally</h1>
+      <p id="counter-summary" hidden></p>
       <form id="new-counter-form">
         <input type="text" id="new-counter-name" placeholder="New counter name" required maxlength="60">
         <button type="submit">Add</button>
@@ -18,11 +19,15 @@
 
     <ul id="counter-list"></ul>
 
-    <p id="empty-state" hidden>No counters yet. Add one above.</p>
+    <div id="empty-state" hidden>
+      <span class="empty-icon" aria-hidden="true">＋</span>
+      <p>No counters yet.<br>Add one above to get started.</p>
+    </div>
   </main>
 
   <template id="counter-template">
     <li class="counter" data-id="">
+      <span class="counter-dot" aria-hidden="true"></span>
       <span class="counter-name"></span>
       <div class="counter-controls">
         <button class="decrement" aria-label="Decrement">&minus;</button>
