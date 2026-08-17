@@ -1,5 +1,13 @@
 const STORAGE_KEY = "tally.counters";
 
+// At thousands of taps the full-rebuild DOM path becomes the bottleneck.
+// Render only the newest HISTORY_DISPLAY_LIMIT entries; on each subsequent
+// tap prepend a single row instead of clearing and rebuilding everything.
+// HISTORY_STORE_LIMIT bounds the localStorage payload so JSON serialization
+// stays fast regardless of tap count.
+const HISTORY_DISPLAY_LIMIT = 100;
+const HISTORY_STORE_LIMIT = 500;
+
 const ACCENT_COLORS = [
   "#2563eb", // blue
   "#dc2626", // red
@@ -81,6 +89,44 @@ function setStorageWarning(show) {
   if (el) el.hidden = !show;
 }
 
+// --- Cross-tab safe writes ---
+//
+// Each tab keeps its own in-memory `counters` array, so two tabs editing at
+// once can otherwise race: both read a stale snapshot, both write it back,
+// and whichever tab saves last silently drops the other tab's tap. To avoid
+// that, every mutation re-reads the latest data from localStorage and saves
+// again inside a single exclusive `navigator.locks` critical section, so a
+// tap always applies on top of the most current state instead of a stale
+// page-load snapshot. Locks page has near-universal support in evergreen
+// browsers on secure contexts (https, or localhost); where unavailable we
+// fall back to just re-reading fresh each time, which is not a hard
+// guarantee under literally simultaneous clicks but removes the dominant,
+// deterministic form of the bug (a tab clobbering another tab's earlier
+// write with a stale full-array snapshot).
+
+const STORAGE_LOCK_NAME = "tally.counters.lock";
+
+function withStorageLock(fn) {
+  if (typeof navigator !== "undefined" && navigator.locks?.request) {
+    return navigator.locks.request(STORAGE_LOCK_NAME, () => fn());
+  }
+  return Promise.resolve().then(fn);
+}
+
+// Runs `mutator` with `counters` refreshed from localStorage immediately
+// beforehand, then persists the result — all inside one exclusive lock so
+// no other tab's mutation can interleave. `mutator` reads/reassigns the
+// module-level `counters` directly and may return a value to hand back to
+// the caller (e.g. the counter that was just changed).
+function mutateCounters(mutator) {
+  return withStorageLock(() => {
+    counters = loadCounters();
+    const result = mutator();
+    saveCounters();
+    return result;
+  });
+}
+
 function accentFor(id) {
   let hash = 0;
   for (let i = 0; i < id.length; i++) {
@@ -140,9 +186,10 @@ function renderHome() {
   }
 }
 
-function addCounter(name) {
-  counters.push({ id: crypto.randomUUID(), name, count: 0, history: [] });
-  saveCounters();
+async function addCounter(name) {
+  await mutateCounters(() => {
+    counters.push({ id: crypto.randomUUID(), name, count: 0, history: [] });
+  });
   renderHome();
 
   const newLi = listEl.lastElementChild;
@@ -152,25 +199,35 @@ function addCounter(name) {
   }
 }
 
-function removeCounter(id) {
-  counters = counters.filter((c) => c.id !== id);
-  saveCounters();
+async function removeCounter(id) {
+  await mutateCounters(() => {
+    counters = counters.filter((c) => c.id !== id);
+  });
   renderHome();
 }
 
 // --- Shared count logic ---
 
-function changeCount(id, delta) {
-  const counter = counters.find((c) => c.id === id);
+async function changeCount(id, delta) {
+  const counter = await mutateCounters(() => {
+    const c = counters.find((item) => item.id === id);
+    if (!c) return null;
+    c.count += delta;
+    c.history.push({ delta, at: Date.now() });
+    if (c.history.length > HISTORY_STORE_LIMIT) {
+      c.history.splice(0, c.history.length - HISTORY_STORE_LIMIT);
+    }
+    return c;
+  });
   if (!counter) return;
-  counter.count += delta;
-  counter.history.push({ delta, at: Date.now() });
-  saveCounters();
 
   const route = currentRoute();
   if (route.view === "detail" && route.id === id) {
     updateDetailCount(counter);
-    renderHistory(counter);
+    prependHistoryEntry(
+      counter.history[counter.history.length - 1],
+      counter.history.length
+    );
   } else {
     const li = listEl.querySelector(`.counter[data-id="${id}"]`);
     const countEl = li?.querySelector(".counter-count");
@@ -208,61 +265,101 @@ function updateDetailCount(counter) {
   pulseElement(detailCountEl);
 }
 
+function buildHistoryEntry(entry) {
+  const li = document.createElement("li");
+  li.className = "history-entry";
+
+  const deltaEl = document.createElement("span");
+  deltaEl.className = `history-delta ${entry.delta > 0 ? "positive" : "negative"}`;
+  deltaEl.textContent = entry.delta > 0 ? `+${entry.delta}` : `${entry.delta}`;
+
+  const timeEl = document.createElement("span");
+  timeEl.className = "history-time";
+  timeEl.textContent = formatTime(entry.at);
+
+  li.appendChild(deltaEl);
+  li.appendChild(timeEl);
+  return li;
+}
+
 function renderHistory(counter) {
   historyListEl.innerHTML = "";
   historyEmptyEl.hidden = counter.history.length > 0;
 
-  const entries = [...counter.history].reverse();
-  for (const entry of entries) {
-    const li = document.createElement("li");
-    li.className = "history-entry";
+  const total = counter.history.length;
+  // Render newest-first, capped to avoid creating thousands of DOM nodes.
+  const slice = counter.history.slice(-HISTORY_DISPLAY_LIMIT);
+  for (let i = slice.length - 1; i >= 0; i--) {
+    historyListEl.appendChild(buildHistoryEntry(slice[i]));
+  }
 
-    const deltaEl = document.createElement("span");
-    deltaEl.className = `history-delta ${entry.delta > 0 ? "positive" : "negative"}`;
-    deltaEl.textContent = entry.delta > 0 ? `+${entry.delta}` : `${entry.delta}`;
+  if (total > HISTORY_DISPLAY_LIMIT) {
+    historyListEl.appendChild(buildTruncationNote(total));
+  }
+}
 
-    const timeEl = document.createElement("span");
-    timeEl.className = "history-time";
-    timeEl.textContent = formatTime(entry.at);
+function buildTruncationNote(total) {
+  const li = document.createElement("li");
+  li.className = "history-truncated-note";
+  li.textContent = `Showing latest ${HISTORY_DISPLAY_LIMIT} of ${total} taps`;
+  return li;
+}
 
-    li.appendChild(deltaEl);
-    li.appendChild(timeEl);
-    historyListEl.appendChild(li);
+// O(1) update: prepend one row instead of rebuilding the entire list.
+function prependHistoryEntry(entry, totalStored) {
+  historyEmptyEl.hidden = true;
+  historyListEl.insertBefore(buildHistoryEntry(entry), historyListEl.firstChild);
+
+  // Drop the oldest visible entry once we exceed the display limit.
+  const entries = historyListEl.querySelectorAll(".history-entry");
+  if (entries.length > HISTORY_DISPLAY_LIMIT) {
+    entries[entries.length - 1].remove();
+  }
+
+  // Keep the truncation note accurate.
+  let note = historyListEl.querySelector(".history-truncated-note");
+  if (totalStored > HISTORY_DISPLAY_LIMIT) {
+    if (!note) {
+      note = buildTruncationNote(totalStored);
+      historyListEl.appendChild(note);
+    } else {
+      note.textContent = `Showing latest ${HISTORY_DISPLAY_LIMIT} of ${totalStored} taps`;
+    }
   }
 }
 
 // --- Event wiring ---
 
-formEl.addEventListener("submit", (e) => {
+formEl.addEventListener("submit", async (e) => {
   e.preventDefault();
   const name = nameInputEl.value.trim();
   if (!name) return;
-  addCounter(name);
+  await addCounter(name);
   nameInputEl.value = "";
   nameInputEl.focus();
 });
 
-listEl.addEventListener("click", (e) => {
+listEl.addEventListener("click", async (e) => {
   const li = e.target.closest(".counter");
   if (!li) return;
   const id = li.dataset.id;
 
-  if (e.target.closest(".increment")) changeCount(id, 1);
-  else if (e.target.closest(".decrement")) changeCount(id, -1);
+  if (e.target.closest(".increment")) await changeCount(id, 1);
+  else if (e.target.closest(".decrement")) await changeCount(id, -1);
   else if (e.target.closest(".remove")) li.classList.add("confirming");
   else if (e.target.closest(".confirm-cancel-btn")) li.classList.remove("confirming");
-  else if (e.target.closest(".confirm-delete-btn")) removeCounter(id);
+  else if (e.target.closest(".confirm-delete-btn")) await removeCounter(id);
   // .counter-name is a plain <a href="#/counter/..."> — let it navigate natively.
 });
 
-detailIncrementEl.addEventListener("click", () => {
+detailIncrementEl.addEventListener("click", async () => {
   const { id } = currentRoute();
-  if (id) changeCount(id, 1);
+  if (id) await changeCount(id, 1);
 });
 
-detailDecrementEl.addEventListener("click", () => {
+detailDecrementEl.addEventListener("click", async () => {
   const { id } = currentRoute();
-  if (id) changeCount(id, -1);
+  if (id) await changeCount(id, -1);
 });
 
 backLinkEl.addEventListener("click", (e) => {
@@ -280,12 +377,21 @@ deleteCancelBtnEl.addEventListener("click", () => {
   deleteBtnEl.hidden = false;
 });
 
-deleteConfirmBtnEl.addEventListener("click", () => {
+deleteConfirmBtnEl.addEventListener("click", async () => {
   const { id } = currentRoute();
-  if (id) removeCounter(id);
+  if (id) await removeCounter(id);
   location.hash = "";
 });
 
 window.addEventListener("hashchange", renderApp);
+
+// Another tab changed the data (e.g. tapped the same counter) — pick up its
+// write immediately instead of showing a stale count until this tab does
+// its own mutation or the page is reloaded.
+window.addEventListener("storage", (e) => {
+  if (e.key !== STORAGE_KEY) return;
+  counters = loadCounters();
+  renderApp();
+});
 
 renderApp();

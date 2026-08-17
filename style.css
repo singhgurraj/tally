@@ -483,6 +483,13 @@ h1 {
   border-radius: 16px;
 }
 
+.history-truncated-note {
+  color: var(--muted);
+  font-size: 0.8rem;
+  text-align: center;
+  padding: 0.5rem;
+}
+
 .detail-delete {
   margin-top: 2.5rem;
   padding-top: 1.5rem;
