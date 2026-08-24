@@ -81,6 +81,7 @@ function saveCounters() {
   } catch (err) {
     console.error("Tally: failed to save counters to localStorage", err);
     setStorageWarning(true);
+    throw err;
   }
 }
 
@@ -121,8 +122,14 @@ function withStorageLock(fn) {
 function mutateCounters(mutator) {
   return withStorageLock(() => {
     counters = loadCounters();
+    const snapshot = JSON.stringify(counters);
     const result = mutator();
-    saveCounters();
+    try {
+      saveCounters();
+    } catch (err) {
+      counters = JSON.parse(snapshot);
+      throw err;
+    }
     return result;
   });
 }
@@ -187,9 +194,13 @@ function renderHome() {
 }
 
 async function addCounter(name) {
-  await mutateCounters(() => {
-    counters.push({ id: crypto.randomUUID(), name, count: 0, history: [] });
-  });
+  try {
+    await mutateCounters(() => {
+      counters.push({ id: crypto.randomUUID(), name, count: 0, history: [] });
+    });
+  } catch {
+    return;
+  }
   renderHome();
 
   const newLi = listEl.lastElementChild;
@@ -200,25 +211,34 @@ async function addCounter(name) {
 }
 
 async function removeCounter(id) {
-  await mutateCounters(() => {
-    counters = counters.filter((c) => c.id !== id);
-  });
+  try {
+    await mutateCounters(() => {
+      counters = counters.filter((c) => c.id !== id);
+    });
+  } catch {
+    return;
+  }
   renderHome();
 }
 
 // --- Shared count logic ---
 
 async function changeCount(id, delta) {
-  const counter = await mutateCounters(() => {
-    const c = counters.find((item) => item.id === id);
-    if (!c) return null;
-    c.count += delta;
-    c.history.push({ delta, at: Date.now() });
-    if (c.history.length > HISTORY_STORE_LIMIT) {
-      c.history.splice(0, c.history.length - HISTORY_STORE_LIMIT);
-    }
-    return c;
-  });
+  let counter;
+  try {
+    counter = await mutateCounters(() => {
+      const c = counters.find((item) => item.id === id);
+      if (!c) return null;
+      c.count += delta;
+      c.history.push({ delta, at: Date.now() });
+      if (c.history.length > HISTORY_STORE_LIMIT) {
+        c.history.splice(0, c.history.length - HISTORY_STORE_LIMIT);
+      }
+      return c;
+    });
+  } catch {
+    return;
+  }
   if (!counter) return;
 
   const route = currentRoute();
