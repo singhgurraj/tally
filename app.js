@@ -1,5 +1,16 @@
 const STORAGE_KEY = "tally.counters";
 
+// Bump SCHEMA_VERSION whenever the stored data format changes, and add a
+// corresponding entry to `migrations` below that transforms counters from the
+// previous version to this one.
+const SCHEMA_VERSION = 1;
+
+// Each function migrates the raw counters array from version (key) to key+1.
+// Migrations run on unknown/untrusted data — keep them defensive.
+const migrations = {
+  // v0 (bare array) → v1 (versioned envelope): no per-counter field changes.
+};
+
 // At thousands of taps the full-rebuild DOM path becomes the bottleneck.
 // Render only the newest HISTORY_DISPLAY_LIMIT entries; on each subsequent
 // tap prepend a single row instead of clearing and rebuilding everything.
@@ -50,15 +61,44 @@ function sanitizeCounter(raw) {
   if (!raw || typeof raw !== "object") return null;
 
   const id = typeof raw.id === "string" && raw.id ? raw.id : crypto.randomUUID();
-  const name = typeof raw.name === "string" ? raw.name : "";
+  const name = typeof raw.name === "string" ? raw.name.trim() : "";
   const count = typeof raw.count === "number" && Number.isFinite(raw.count) ? raw.count : 0;
+  // History entries are kept as-is (spread intact) so any future fields on
+  // entries survive a round-trip through an older app version.
   const history = Array.isArray(raw.history)
     ? raw.history.filter(
         (e) => e && typeof e.delta === "number" && typeof e.at === "number"
       )
     : [];
 
-  return { id, name, count, history };
+  // Spread raw first so unknown fields added by future app versions are
+  // preserved rather than silently dropped.
+  return { ...raw, id, name, count, history };
+}
+
+// Assign fallback names to empty-named counters and append numeric suffixes to
+// any duplicates so the invariant "all names are non-empty and unique
+// (case-insensitively)" holds after loading potentially corrupted storage.
+function repairCounterNames(list) {
+  const seen = new Set();
+  let fallback = 1;
+  return list.map((c) => {
+    let name = c.name;
+
+    if (!name) {
+      while (seen.has(`counter ${fallback}`)) fallback++;
+      name = `Counter ${fallback++}`;
+    }
+
+    if (seen.has(name.toLowerCase())) {
+      let n = 2;
+      while (seen.has(`${name.toLowerCase()} ${n}`)) n++;
+      name = `${name} ${n}`;
+    }
+
+    seen.add(name.toLowerCase());
+    return name === c.name ? c : { ...c, name };
+  });
 }
 
 function loadCounters() {
@@ -66,8 +106,27 @@ function loadCounters() {
     const raw = localStorage.getItem(STORAGE_KEY);
     if (!raw) return [];
     const parsed = JSON.parse(raw);
-    if (!Array.isArray(parsed)) return [];
-    return parsed.map(sanitizeCounter).filter(Boolean);
+
+    // Legacy format (pre-versioning): a bare array of counters.
+    // Treat it as version 0 so migrations bring it up to SCHEMA_VERSION.
+    let version, rawCounters;
+    if (Array.isArray(parsed)) {
+      version = 0;
+      rawCounters = parsed;
+    } else if (parsed && typeof parsed === "object" && Array.isArray(parsed.counters)) {
+      version = typeof parsed.version === "number" ? parsed.version : 0;
+      rawCounters = parsed.counters;
+    } else {
+      return [];
+    }
+
+    // Run each pending migration in order.
+    while (version < SCHEMA_VERSION) {
+      if (migrations[version]) rawCounters = migrations[version](rawCounters);
+      version++;
+    }
+
+    return repairCounterNames(rawCounters.map(sanitizeCounter).filter(Boolean));
   } catch (err) {
     console.error("Tally: failed to load counters from localStorage", err);
     return [];
@@ -76,7 +135,10 @@ function loadCounters() {
 
 function saveCounters() {
   try {
-    localStorage.setItem(STORAGE_KEY, JSON.stringify(counters));
+    localStorage.setItem(
+      STORAGE_KEY,
+      JSON.stringify({ version: SCHEMA_VERSION, counters })
+    );
     setStorageWarning(false);
   } catch (err) {
     console.error("Tally: failed to save counters to localStorage", err);
@@ -194,20 +256,32 @@ function renderHome() {
 }
 
 async function addCounter(name) {
+  name = name.trim();
+  if (!name) return { ok: false, reason: "empty" };
+
+  let outcome;
   try {
-    await mutateCounters(() => {
+    outcome = await mutateCounters(() => {
+      const lower = name.toLowerCase();
+      if (counters.some((c) => c.name.toLowerCase() === lower)) {
+        return { ok: false, reason: "duplicate" };
+      }
       counters.push({ id: crypto.randomUUID(), name, count: 0, history: [] });
+      return { ok: true };
     });
   } catch {
-    return;
+    return { ok: false, reason: "error" };
   }
-  renderHome();
 
+  if (!outcome.ok) return outcome;
+
+  renderHome();
   const newLi = listEl.lastElementChild;
   if (newLi) {
     newLi.classList.add("counter-enter");
     newLi.addEventListener("animationend", () => newLi.classList.remove("counter-enter"), { once: true });
   }
+  return { ok: true };
 }
 
 async function removeCounter(id) {
@@ -350,11 +424,33 @@ function prependHistoryEntry(entry, totalStored) {
 
 // --- Event wiring ---
 
+const nameErrorEl = document.getElementById("name-error");
+
+function showNameError(msg) {
+  nameErrorEl.textContent = msg;
+  nameErrorEl.hidden = false;
+}
+
+function clearNameError() {
+  nameErrorEl.hidden = true;
+  nameErrorEl.textContent = "";
+}
+
+nameInputEl.addEventListener("input", clearNameError);
+
 formEl.addEventListener("submit", async (e) => {
   e.preventDefault();
   const name = nameInputEl.value.trim();
   if (!name) return;
-  await addCounter(name);
+  const result = await addCounter(name);
+  if (!result.ok) {
+    if (result.reason === "duplicate") {
+      showNameError("A counter with that name already exists.");
+      nameInputEl.select();
+    }
+    return;
+  }
+  clearNameError();
   nameInputEl.value = "";
   nameInputEl.focus();
 });
