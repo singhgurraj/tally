@@ -12,8 +12,63 @@
       ⚠ Changes aren't being saved — local storage is unavailable in this browser (private browsing or storage may be disabled).
     </p>
 
-    <section id="home-view">
+    <!-- Profile selection / creation / unlock screens -->
+    <section id="profile-view" hidden>
+
+      <div id="profile-list-screen">
+        <header>
+          <h1>Tally</h1>
+          <p class="profile-hint">Choose a profile to continue.</p>
+        </header>
+        <ul id="profile-list" role="list"></ul>
+        <p id="profile-empty" hidden>No profiles yet — create one below.</p>
+        <button type="button" id="new-profile-btn" class="new-profile-btn">New profile</button>
+      </div>
+
+      <div id="profile-create-screen" hidden>
+        <a href="#" id="create-cancel-link" class="back-link">&larr; All profiles</a>
+        <h2>New profile</h2>
+        <form id="profile-create-form" novalidate>
+          <div class="field">
+            <label for="profile-name-input">Name</label>
+            <input type="text" id="profile-name-input" maxlength="30" autocomplete="off" required>
+          </div>
+          <div class="field">
+            <label for="profile-pin-input">
+              PIN
+              <span class="label-hint">(optional &middot; 4 digits)</span>
+            </label>
+            <input type="password" id="profile-pin-input" inputmode="numeric" maxlength="4" autocomplete="new-password">
+          </div>
+          <p id="profile-create-error" class="name-error" role="alert" hidden></p>
+          <button type="submit" class="primary-btn">Create profile</button>
+        </form>
+      </div>
+
+      <div id="profile-unlock-screen" hidden>
+        <a href="#" id="unlock-cancel-link" class="back-link">&larr; All profiles</a>
+        <div class="profile-unlock-header">
+          <span class="counter-dot large" id="unlock-dot" aria-hidden="true"></span>
+          <h2 id="unlock-profile-name" tabindex="-1"></h2>
+        </div>
+        <form id="profile-unlock-form" novalidate>
+          <div class="field">
+            <label for="profile-unlock-pin">Enter PIN</label>
+            <input type="password" id="profile-unlock-pin" inputmode="numeric" maxlength="4" autocomplete="current-password">
+          </div>
+          <p id="profile-unlock-error" class="name-error" role="alert" hidden></p>
+          <button type="submit" class="primary-btn">Unlock</button>
+        </form>
+      </div>
+
+    </section>
+
+    <section id="home-view" hidden>
       <header>
+        <div class="profile-bar">
+          <span id="active-profile-label" class="active-profile-label"></span>
+          <button type="button" id="lock-btn" class="lock-btn">Lock</button>
+        </div>
         <h1>Tally</h1>
         <p id="counter-summary" hidden></p>
         <form id="new-counter-form">
@@ -32,16 +87,19 @@
     </section>
 
     <section id="detail-view" hidden>
-      <a href="#" id="back-link">&larr; All counters</a>
+      <div class="detail-nav">
+        <a href="#" id="back-link" class="back-link">&larr; All counters</a>
+        <button type="button" id="detail-lock-btn" class="lock-btn">Lock</button>
+      </div>
 
       <div class="detail-header">
         <span class="counter-dot large" id="detail-dot" aria-hidden="true"></span>
-        <h2 id="detail-name"></h2>
+        <h2 id="detail-name" tabindex="-1"></h2>
       </div>
 
       <div class="detail-count-row">
         <button id="detail-decrement" aria-label="Decrement">&minus;</button>
-        <span id="detail-count">0</span>
+        <span id="detail-count" aria-live="polite">0</span>
         <button id="detail-increment" aria-label="Increment">+</button>
       </div>
 
@@ -60,6 +118,16 @@
     </section>
   </main>
 
+  <template id="profile-template">
+    <li class="profile-item">
+      <button type="button" class="profile-select-btn" data-profile-id="">
+        <span class="counter-dot" aria-hidden="true"></span>
+        <span class="profile-item-name"></span>
+        <span class="profile-lock-indicator" aria-hidden="true" hidden>PIN</span>
+      </button>
+    </li>
+  </template>
+
   <template id="counter-template">
     <li class="counter" data-id="">
       <div class="counter-main">
@@ -67,7 +135,7 @@
         <a href="#" class="counter-name"></a>
         <div class="counter-controls">
           <button class="decrement" aria-label="Decrement">&minus;</button>
-          <span class="counter-count">0</span>
+          <span class="counter-count" aria-live="polite">0</span>
           <button class="increment" aria-label="Increment">+</button>
         </div>
         <button class="remove" aria-label="Delete counter">&times;</button>
@@ -80,6 +148,7 @@
     </li>
   </template>
 
+  <script src="counters.js"></script>
   <script src="app.js"></script>
 </body>
 </html>

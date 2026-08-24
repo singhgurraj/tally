@@ -1,39 +1,26 @@
-const STORAGE_KEY = "tally.counters";
+// app.js — UI layer.  All pure data/storage functions live in counters.js and
+// are available here as browser globals (META_KEY, storageKey, loadCounters,
+// saveCounters, loadMeta, saveMeta, migrateIfNeeded, accentFor, formatTime,
+// hashPIN, ACCENT_COLORS, HISTORY_DISPLAY_LIMIT, HISTORY_STORE_LIMIT).
 
-// Bump SCHEMA_VERSION whenever the stored data format changes, and add a
-// corresponding entry to `migrations` below that transforms counters from the
-// previous version to this one.
-const SCHEMA_VERSION = 1;
+// sessionStorage key for the currently unlocked profile in this tab.
+// sessionStorage is tab-scoped and clears when the tab closes, so the unlock
+// state never carries over to a new browsing session on a shared machine.
+const SESSION_KEY = "tally.session";
+const META_LOCK_NAME = "tally.meta.lock";
 
-// Each function migrates the raw counters array from version (key) to key+1.
-// Migrations run on unknown/untrusted data — keep them defensive.
-const migrations = {
-  // v0 (bare array) → v1 (versioned envelope): no per-counter field changes.
-};
-
-// At thousands of taps the full-rebuild DOM path becomes the bottleneck.
-// Render only the newest HISTORY_DISPLAY_LIMIT entries; on each subsequent
-// tap prepend a single row instead of clearing and rebuilding everything.
-// HISTORY_STORE_LIMIT bounds the localStorage payload so JSON serialization
-// stays fast regardless of tap count.
-const HISTORY_DISPLAY_LIMIT = 100;
-const HISTORY_STORE_LIMIT = 500;
-
-const ACCENT_COLORS = [
-  "#2563eb", // blue
-  "#dc2626", // red
-  "#16a34a", // green
-  "#d97706", // amber
-  "#9333ea", // purple
-  "#0891b2", // cyan
-  "#db2777", // pink
-  "#65a30d", // lime
-];
+// Which profile is currently unlocked in this tab. null = profile screen shown.
+let activeProfileId = null;
 
 /** @type {{id: string, name: string, count: number, history: {delta: number, at: number}[]}[]} */
-let counters = loadCounters();
+let counters = [];
 
-// Home view elements
+// Tracks the counter ID last opened in detail view so focus can return to its
+// list item when the user navigates back.
+let lastDetailId = null;
+
+// --- DOM refs: home / detail ---
+
 const homeViewEl = document.getElementById("home-view");
 const listEl = document.getElementById("counter-list");
 const emptyStateEl = document.getElementById("empty-state");
@@ -42,7 +29,6 @@ const formEl = document.getElementById("new-counter-form");
 const nameInputEl = document.getElementById("new-counter-name");
 const templateEl = document.getElementById("counter-template");
 
-// Detail view elements
 const detailViewEl = document.getElementById("detail-view");
 const detailDotEl = document.getElementById("detail-dot");
 const detailNameEl = document.getElementById("detail-name");
@@ -57,95 +43,35 @@ const deleteConfirmEl = document.getElementById("delete-confirm");
 const deleteCancelBtnEl = document.getElementById("delete-cancel-btn");
 const deleteConfirmBtnEl = document.getElementById("delete-confirm-btn");
 
-function sanitizeCounter(raw) {
-  if (!raw || typeof raw !== "object") return null;
+// --- DOM refs: profile view ---
 
-  const id = typeof raw.id === "string" && raw.id ? raw.id : crypto.randomUUID();
-  const name = typeof raw.name === "string" ? raw.name.trim() : "";
-  const count = typeof raw.count === "number" && Number.isFinite(raw.count) ? raw.count : 0;
-  // History entries are kept as-is (spread intact) so any future fields on
-  // entries survive a round-trip through an older app version.
-  const history = Array.isArray(raw.history)
-    ? raw.history.filter(
-        (e) => e && typeof e.delta === "number" && typeof e.at === "number"
-      )
-    : [];
+const profileViewEl = document.getElementById("profile-view");
+const profileListScreenEl = document.getElementById("profile-list-screen");
+const profileListEl = document.getElementById("profile-list");
+const profileEmptyEl = document.getElementById("profile-empty");
+const newProfileBtnEl = document.getElementById("new-profile-btn");
+const profileTemplateEl = document.getElementById("profile-template");
 
-  // Spread raw first so unknown fields added by future app versions are
-  // preserved rather than silently dropped.
-  return { ...raw, id, name, count, history };
-}
+const profileCreateScreenEl = document.getElementById("profile-create-screen");
+const createCancelLinkEl = document.getElementById("create-cancel-link");
+const profileCreateFormEl = document.getElementById("profile-create-form");
+const profileNameInputEl = document.getElementById("profile-name-input");
+const profilePinInputEl = document.getElementById("profile-pin-input");
+const profileCreateErrorEl = document.getElementById("profile-create-error");
 
-// Assign fallback names to empty-named counters and append numeric suffixes to
-// any duplicates so the invariant "all names are non-empty and unique
-// (case-insensitively)" holds after loading potentially corrupted storage.
-function repairCounterNames(list) {
-  const seen = new Set();
-  let fallback = 1;
-  return list.map((c) => {
-    let name = c.name;
+const profileUnlockScreenEl = document.getElementById("profile-unlock-screen");
+const unlockCancelLinkEl = document.getElementById("unlock-cancel-link");
+const unlockDotEl = document.getElementById("unlock-dot");
+const unlockProfileNameEl = document.getElementById("unlock-profile-name");
+const profileUnlockFormEl = document.getElementById("profile-unlock-form");
+const profileUnlockPinEl = document.getElementById("profile-unlock-pin");
+const profileUnlockErrorEl = document.getElementById("profile-unlock-error");
 
-    if (!name) {
-      while (seen.has(`counter ${fallback}`)) fallback++;
-      name = `Counter ${fallback++}`;
-    }
+const activeProfileLabelEl = document.getElementById("active-profile-label");
+const lockBtnEl = document.getElementById("lock-btn");
+const detailLockBtnEl = document.getElementById("detail-lock-btn");
 
-    if (seen.has(name.toLowerCase())) {
-      let n = 2;
-      while (seen.has(`${name.toLowerCase()} ${n}`)) n++;
-      name = `${name} ${n}`;
-    }
-
-    seen.add(name.toLowerCase());
-    return name === c.name ? c : { ...c, name };
-  });
-}
-
-function loadCounters() {
-  try {
-    const raw = localStorage.getItem(STORAGE_KEY);
-    if (!raw) return [];
-    const parsed = JSON.parse(raw);
-
-    // Legacy format (pre-versioning): a bare array of counters.
-    // Treat it as version 0 so migrations bring it up to SCHEMA_VERSION.
-    let version, rawCounters;
-    if (Array.isArray(parsed)) {
-      version = 0;
-      rawCounters = parsed;
-    } else if (parsed && typeof parsed === "object" && Array.isArray(parsed.counters)) {
-      version = typeof parsed.version === "number" ? parsed.version : 0;
-      rawCounters = parsed.counters;
-    } else {
-      return [];
-    }
-
-    // Run each pending migration in order.
-    while (version < SCHEMA_VERSION) {
-      if (migrations[version]) rawCounters = migrations[version](rawCounters);
-      version++;
-    }
-
-    return repairCounterNames(rawCounters.map(sanitizeCounter).filter(Boolean));
-  } catch (err) {
-    console.error("Tally: failed to load counters from localStorage", err);
-    return [];
-  }
-}
-
-function saveCounters() {
-  try {
-    localStorage.setItem(
-      STORAGE_KEY,
-      JSON.stringify({ version: SCHEMA_VERSION, counters })
-    );
-    setStorageWarning(false);
-  } catch (err) {
-    console.error("Tally: failed to save counters to localStorage", err);
-    setStorageWarning(true);
-    throw err;
-  }
-}
+// --- Storage helpers ---
 
 function setStorageWarning(show) {
   const el = document.getElementById("storage-warning");
@@ -160,18 +86,21 @@ function setStorageWarning(show) {
 // that, every mutation re-reads the latest data from localStorage and saves
 // again inside a single exclusive `navigator.locks` critical section, so a
 // tap always applies on top of the most current state instead of a stale
-// page-load snapshot. Locks page has near-universal support in evergreen
+// page-load snapshot. Locks API has near-universal support in evergreen
 // browsers on secure contexts (https, or localhost); where unavailable we
 // fall back to just re-reading fresh each time, which is not a hard
 // guarantee under literally simultaneous clicks but removes the dominant,
 // deterministic form of the bug (a tab clobbering another tab's earlier
 // write with a stale full-array snapshot).
 
-const STORAGE_LOCK_NAME = "tally.counters.lock";
-
 function withStorageLock(fn) {
+  // Use a per-profile lock name so two profiles tapping simultaneously don't
+  // contend with each other.
+  const lockName = activeProfileId
+    ? storageKey(activeProfileId) + ".lock"
+    : "tally.counters.lock";
   if (typeof navigator !== "undefined" && navigator.locks?.request) {
-    return navigator.locks.request(STORAGE_LOCK_NAME, () => fn());
+    return navigator.locks.request(lockName, () => fn());
   }
   return Promise.resolve().then(fn);
 }
@@ -183,35 +112,136 @@ function withStorageLock(fn) {
 // the caller (e.g. the counter that was just changed).
 function mutateCounters(mutator) {
   return withStorageLock(() => {
-    counters = loadCounters();
+    counters = loadCounters(activeProfileId);
     const snapshot = JSON.stringify(counters);
     const result = mutator();
     try {
-      saveCounters();
+      saveCounters(activeProfileId, counters);
+      setStorageWarning(false);
     } catch (err) {
       counters = JSON.parse(snapshot);
+      setStorageWarning(true);
       throw err;
     }
     return result;
   });
 }
 
-function accentFor(id) {
-  let hash = 0;
-  for (let i = 0; i < id.length; i++) {
-    hash = (hash * 31 + id.charCodeAt(i)) >>> 0;
+function withMetaLock(fn) {
+  if (typeof navigator !== "undefined" && navigator.locks?.request) {
+    return navigator.locks.request(META_LOCK_NAME, () => fn());
   }
-  return ACCENT_COLORS[hash % ACCENT_COLORS.length];
+  return Promise.resolve().then(fn);
 }
 
-function formatTime(at) {
-  return new Date(at).toLocaleString(undefined, {
-    dateStyle: "medium",
-    timeStyle: "medium",
+// Mutates the profile registry atomically, parallel to mutateCounters.
+// `mutator` receives the meta object and modifies it in place.
+function mutateMeta(mutator) {
+  return withMetaLock(() => {
+    const meta = loadMeta();
+    const result = mutator(meta);
+    saveMeta(meta);
+    return result;
   });
 }
 
-// --- Routing ---
+// --- Session management ---
+
+function getSession() {
+  try { return sessionStorage.getItem(SESSION_KEY) || null; } catch { return null; }
+}
+
+function setSession(profileId) {
+  try { sessionStorage.setItem(SESSION_KEY, profileId); } catch { /* unavailable */ }
+}
+
+function clearSession() {
+  try { sessionStorage.removeItem(SESSION_KEY); } catch { /* unavailable */ }
+}
+
+// --- Profile activation ---
+
+function activateProfile(profileId) {
+  activeProfileId = profileId;
+  setSession(profileId);
+  counters = loadCounters(activeProfileId);
+}
+
+function handleLock() {
+  clearSession();
+  activeProfileId = null;
+  counters = [];
+  location.hash = "";
+  renderApp();
+}
+
+// --- Profile view sub-screens ---
+
+function showProfileListScreen() {
+  profileListScreenEl.hidden = false;
+  profileCreateScreenEl.hidden = true;
+  profileUnlockScreenEl.hidden = true;
+  renderProfileList();
+  requestAnimationFrame(() => {
+    const first = profileListEl.querySelector(".profile-select-btn");
+    (first || newProfileBtnEl).focus();
+  });
+}
+
+function showProfileCreateScreen() {
+  profileListScreenEl.hidden = true;
+  profileCreateScreenEl.hidden = false;
+  profileUnlockScreenEl.hidden = true;
+  profileCreateErrorEl.hidden = true;
+  profileNameInputEl.value = "";
+  profilePinInputEl.value = "";
+  requestAnimationFrame(() => profileNameInputEl.focus());
+}
+
+function showUnlockScreen(profileId) {
+  const meta = loadMeta();
+  const profile = meta.profiles.find((p) => p.id === profileId);
+  if (!profile) { showProfileListScreen(); return; }
+
+  profileListScreenEl.hidden = true;
+  profileCreateScreenEl.hidden = true;
+  profileUnlockScreenEl.hidden = false;
+  profileUnlockScreenEl.dataset.profileId = profileId;
+  unlockDotEl.style.setProperty("--accent-color", accentFor(profile.id));
+  unlockProfileNameEl.textContent = profile.name;
+  profileUnlockPinEl.value = "";
+  profileUnlockErrorEl.hidden = true;
+  requestAnimationFrame(() => profileUnlockPinEl.focus());
+}
+
+function renderProfileList() {
+  const meta = loadMeta();
+  profileListEl.innerHTML = "";
+  profileEmptyEl.hidden = meta.profiles.length > 0;
+
+  for (const profile of meta.profiles) {
+    const node = profileTemplateEl.content.cloneNode(true);
+    const btn = node.querySelector(".profile-select-btn");
+    const dot = node.querySelector(".counter-dot");
+    const nameEl = node.querySelector(".profile-item-name");
+    const lockEl = node.querySelector(".profile-lock-indicator");
+
+    dot.style.setProperty("--accent-color", accentFor(profile.id));
+    nameEl.textContent = profile.name;
+    btn.dataset.profileId = profile.id;
+
+    if (profile.pinHash) {
+      lockEl.hidden = false;
+      btn.setAttribute("aria-label", `${profile.name} — PIN protected`);
+    } else {
+      lockEl.hidden = true;
+    }
+
+    profileListEl.appendChild(node);
+  }
+}
+
+// --- Routing / main render ---
 
 function currentRoute() {
   const match = location.hash.match(/^#\/counter\/(.+)$/);
@@ -219,17 +249,49 @@ function currentRoute() {
   return { view: "home" };
 }
 
-function renderApp() {
+// moveFocus should be true only on deliberate user-driven navigations (hash
+// change), not on initial page load or cross-tab storage syncs.
+function renderApp({ moveFocus = false } = {}) {
+  if (!activeProfileId) {
+    homeViewEl.hidden = true;
+    detailViewEl.hidden = true;
+    profileViewEl.hidden = false;
+    showProfileListScreen();
+    return;
+  }
+
+  profileViewEl.hidden = true;
+
+  // Keep the profile label in the home-view header current.
+  if (activeProfileLabelEl) {
+    const meta = loadMeta();
+    const profile = meta.profiles.find((p) => p.id === activeProfileId);
+    activeProfileLabelEl.textContent = profile ? profile.name : "";
+  }
+
   const route = currentRoute();
 
   if (route.view === "detail" && counters.some((c) => c.id === route.id)) {
+    lastDetailId = route.id;
     homeViewEl.hidden = true;
     detailViewEl.hidden = false;
     renderDetail(route.id);
+    if (moveFocus) detailNameEl.focus();
   } else {
     detailViewEl.hidden = true;
     homeViewEl.hidden = false;
     renderHome();
+    if (moveFocus && lastDetailId) {
+      // Return focus to the counter's list item link, or fall back to the first
+      // counter or the new-counter input if the counter was just deleted.
+      const li = listEl.querySelector(`.counter[data-id="${lastDetailId}"]`);
+      const target =
+        li?.querySelector(".counter-name") ||
+        listEl.querySelector(".counter-name") ||
+        nameInputEl;
+      target.focus();
+    }
+    lastDetailId = null;
   }
 }
 
@@ -251,6 +313,9 @@ function renderHome() {
     nameLink.textContent = counter.name;
     nameLink.href = `#/counter/${encodeURIComponent(counter.id)}`;
     node.querySelector(".counter-count").textContent = counter.count;
+    node.querySelector(".decrement").setAttribute("aria-label", `Decrement ${counter.name}`);
+    node.querySelector(".increment").setAttribute("aria-label", `Increment ${counter.name}`);
+    node.querySelector(".remove").setAttribute("aria-label", `Delete ${counter.name}`);
     listEl.appendChild(node);
   }
 }
@@ -422,7 +487,111 @@ function prependHistoryEntry(entry, totalStored) {
   }
 }
 
-// --- Event wiring ---
+// --- Event wiring: profile view ---
+
+profileListEl.addEventListener("click", (e) => {
+  const btn = e.target.closest(".profile-select-btn");
+  if (!btn) return;
+  const profileId = btn.dataset.profileId;
+  const meta = loadMeta();
+  const profile = meta.profiles.find((p) => p.id === profileId);
+  if (!profile) return;
+
+  if (profile.pinHash) {
+    showUnlockScreen(profileId);
+  } else {
+    activateProfile(profileId);
+    renderApp();
+  }
+});
+
+newProfileBtnEl.addEventListener("click", () => showProfileCreateScreen());
+
+createCancelLinkEl.addEventListener("click", (e) => {
+  e.preventDefault();
+  showProfileListScreen();
+});
+
+profileCreateFormEl.addEventListener("submit", async (e) => {
+  e.preventDefault();
+  const name = profileNameInputEl.value.trim();
+  if (!name) return;
+
+  const meta = loadMeta();
+  if (meta.profiles.some((p) => p.name.toLowerCase() === name.toLowerCase())) {
+    profileCreateErrorEl.textContent = "A profile with that name already exists.";
+    profileCreateErrorEl.hidden = false;
+    profileNameInputEl.select();
+    return;
+  }
+
+  const pin = profilePinInputEl.value;
+  if (pin && !/^\d{4}$/.test(pin)) {
+    profileCreateErrorEl.textContent = "PIN must be exactly 4 digits (0–9).";
+    profileCreateErrorEl.hidden = false;
+    profilePinInputEl.select();
+    return;
+  }
+
+  profileCreateErrorEl.hidden = true;
+
+  const profileId = crypto.randomUUID();
+  const pinHash = pin ? await hashPIN(pin, profileId) : null;
+
+  await mutateMeta((meta) => {
+    meta.profiles.push({ id: profileId, name, pinHash });
+  });
+
+  activateProfile(profileId);
+  renderApp();
+});
+
+profileNameInputEl.addEventListener("input", () => { profileCreateErrorEl.hidden = true; });
+profilePinInputEl.addEventListener("input", () => { profileCreateErrorEl.hidden = true; });
+
+unlockCancelLinkEl.addEventListener("click", (e) => {
+  e.preventDefault();
+  showProfileListScreen();
+});
+
+profileUnlockFormEl.addEventListener("submit", async (e) => {
+  e.preventDefault();
+  const profileId = profileUnlockScreenEl.dataset.profileId;
+  const pin = profileUnlockPinEl.value;
+
+  const meta = loadMeta();
+  const profile = meta.profiles.find((p) => p.id === profileId);
+  if (!profile) { showProfileListScreen(); return; }
+
+  const entered = await hashPIN(pin, profileId);
+  if (entered !== profile.pinHash) {
+    profileUnlockErrorEl.textContent = "Incorrect PIN. Try again.";
+    profileUnlockErrorEl.hidden = false;
+    profileUnlockPinEl.value = "";
+    profileUnlockPinEl.focus();
+    return;
+  }
+
+  profileUnlockErrorEl.hidden = true;
+  activateProfile(profileId);
+  renderApp();
+});
+
+profileUnlockPinEl.addEventListener("input", () => {
+  profileUnlockErrorEl.hidden = true;
+  // Auto-submit as soon as 4 digits are entered so the user doesn't have to
+  // press Unlock or hit Enter.
+  if (profileUnlockPinEl.value.length === 4) {
+    profileUnlockFormEl.requestSubmit();
+  }
+});
+
+// --- Event wiring: lock ---
+
+if (lockBtnEl) lockBtnEl.addEventListener("click", handleLock);
+if (detailLockBtnEl) detailLockBtnEl.addEventListener("click", handleLock);
+
+// --- Event wiring: home view ---
 
 const nameErrorEl = document.getElementById("name-error");
 
@@ -462,11 +631,17 @@ listEl.addEventListener("click", async (e) => {
 
   if (e.target.closest(".increment")) await changeCount(id, 1);
   else if (e.target.closest(".decrement")) await changeCount(id, -1);
-  else if (e.target.closest(".remove")) li.classList.add("confirming");
-  else if (e.target.closest(".confirm-cancel-btn")) li.classList.remove("confirming");
-  else if (e.target.closest(".confirm-delete-btn")) await removeCounter(id);
+  else if (e.target.closest(".remove")) {
+    li.classList.add("confirming");
+    li.querySelector(".confirm-cancel-btn").focus();
+  } else if (e.target.closest(".confirm-cancel-btn")) {
+    li.classList.remove("confirming");
+    li.querySelector(".remove").focus();
+  } else if (e.target.closest(".confirm-delete-btn")) await removeCounter(id);
   // .counter-name is a plain <a href="#/counter/..."> — let it navigate natively.
 });
+
+// --- Event wiring: detail view ---
 
 detailIncrementEl.addEventListener("click", async () => {
   const { id } = currentRoute();
@@ -486,11 +661,13 @@ backLinkEl.addEventListener("click", (e) => {
 deleteBtnEl.addEventListener("click", () => {
   deleteBtnEl.hidden = true;
   deleteConfirmEl.hidden = false;
+  deleteCancelBtnEl.focus();
 });
 
 deleteCancelBtnEl.addEventListener("click", () => {
   deleteConfirmEl.hidden = true;
   deleteBtnEl.hidden = false;
+  deleteBtnEl.focus();
 });
 
 deleteConfirmBtnEl.addEventListener("click", async () => {
@@ -499,15 +676,49 @@ deleteConfirmBtnEl.addEventListener("click", async () => {
   location.hash = "";
 });
 
-window.addEventListener("hashchange", renderApp);
+// --- Cross-tab sync ---
 
-// Another tab changed the data (e.g. tapped the same counter) — pick up its
-// write immediately instead of showing a stale count until this tab does
-// its own mutation or the page is reloaded.
+window.addEventListener("hashchange", () => renderApp({ moveFocus: true }));
+
+// Another tab changed the data — pick up its write immediately instead of
+// showing a stale count until this tab does its own mutation or the page
+// is reloaded.
 window.addEventListener("storage", (e) => {
-  if (e.key !== STORAGE_KEY) return;
-  counters = loadCounters();
-  renderApp();
+  // Counter data changed in another tab for the currently active profile.
+  if (activeProfileId && e.key === storageKey(activeProfileId)) {
+    counters = loadCounters(activeProfileId);
+    renderApp();
+    return;
+  }
+  // Profile list changed in another tab (e.g. a new profile was created).
+  if (e.key === META_KEY && !activeProfileId) {
+    renderProfileList();
+  }
 });
 
-renderApp();
+// --- Boot ---
+// Run the legacy migration first (wrapped in the meta lock so two tabs can't
+// both create a migration profile), then restore the tab session (if any)
+// before the first render.
+
+(async () => {
+  await withMetaLock(() => migrateIfNeeded());
+
+  const sessionId = getSession();
+  if (sessionId) {
+    const meta = loadMeta();
+    if (meta.profiles.some((p) => p.id === sessionId)) {
+      activeProfileId = sessionId;
+      counters = loadCounters(activeProfileId);
+    }
+  } else {
+    // Auto-login when there is exactly one PIN-free profile — the common case
+    // after a fresh install or after migrating a single-user setup.
+    const meta = loadMeta();
+    if (meta.profiles.length === 1 && !meta.profiles[0].pinHash) {
+      activateProfile(meta.profiles[0].id);
+    }
+  }
+
+  renderApp();
+})();

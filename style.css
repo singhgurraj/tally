@@ -28,6 +28,12 @@
   box-sizing: border-box;
 }
 
+/* Keyboard focus ring — applies to all interactive elements including future ones. */
+:focus-visible {
+  outline: 2px solid var(--accent);
+  outline-offset: 2px;
+}
+
 body {
   margin: 0;
   font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, sans-serif;
@@ -38,7 +44,8 @@ body {
 main {
   max-width: 480px;
   margin: 0 auto;
-  padding: 3rem 1.25rem 4rem;
+  /* Fluid vertical padding: comfortable on desktop, compact on short phones. */
+  padding: clamp(1.5rem, 5vw, 3rem) 1.25rem clamp(2rem, 6vw, 4rem);
 }
 
 header {
@@ -46,7 +53,8 @@ header {
 }
 
 h1 {
-  font-size: 1.75rem;
+  /* Scales from 1.4rem on 320 px phones up to 1.75rem on 480 px+ screens. */
+  font-size: clamp(1.4rem, 4vw + 0.5rem, 1.75rem);
   font-weight: 800;
   letter-spacing: -0.02em;
   margin: 0 0 0.35rem;
@@ -74,7 +82,7 @@ h1 {
   transition: border-color 120ms ease, box-shadow 120ms ease;
 }
 
-#new-counter-name:focus {
+#new-counter-name:focus-visible {
   outline: none;
   border-color: var(--accent);
   box-shadow: 0 0 0 3px color-mix(in srgb, var(--accent) 20%, transparent);
@@ -158,6 +166,7 @@ h1 {
 
 .counter-name {
   flex: 1;
+  min-width: 0; /* prevents overflow in both flex and grid contexts */
   font-weight: 500;
   overflow-wrap: anywhere;
   color: inherit;
@@ -354,16 +363,10 @@ h1 {
 
 /* Detail view */
 
+/* #back-link is now a .back-link class element inside .detail-nav;
+   margin-bottom is handled by .detail-nav instead. */
 #back-link {
-  display: inline-block;
-  color: var(--muted);
-  text-decoration: none;
-  font-size: 0.9rem;
-  margin-bottom: 1.5rem;
-}
-
-#back-link:hover {
-  color: var(--text);
+  margin-bottom: 1.5rem; /* fallback if ever used outside .detail-nav */
 }
 
 .detail-header {
@@ -525,4 +528,289 @@ h1 {
 .detail-delete .confirm-bar:not([hidden]) {
   display: flex;
   flex-wrap: wrap;
+}
+
+/* ─── Profile view ─────────────────────────────────────────────────────────── */
+
+/* Shared back-link style (profile sub-screens + detail nav) */
+.back-link {
+  display: inline-block;
+  color: var(--muted);
+  text-decoration: none;
+  font-size: 0.9rem;
+}
+
+.back-link:hover {
+  color: var(--text);
+}
+
+/* Profile list screen */
+
+#profile-list-screen header {
+  margin-bottom: 1.75rem;
+}
+
+.profile-hint {
+  margin: 0.25rem 0 1.5rem;
+  color: var(--muted);
+  font-size: 0.875rem;
+}
+
+#profile-list {
+  list-style: none;
+  margin: 0 0 0.6rem;
+  padding: 0;
+  display: flex;
+  flex-direction: column;
+  gap: 0.5rem;
+}
+
+.profile-item {
+  background: var(--surface);
+  border: 1px solid var(--border);
+  border-radius: 14px;
+  box-shadow: var(--shadow);
+  transition: box-shadow 150ms ease, transform 150ms ease;
+}
+
+.profile-item:hover {
+  box-shadow: var(--shadow-hover);
+  transform: translateY(-1px);
+}
+
+.profile-select-btn {
+  display: flex;
+  align-items: center;
+  gap: 0.75rem;
+  width: 100%;
+  padding: 0.9rem 1.1rem;
+  border: none;
+  background: transparent;
+  text-align: left;
+  font-size: 1rem;
+  color: var(--text);
+  cursor: pointer;
+  border-radius: 13px; /* 1 px less than .profile-item to stay inside the border */
+}
+
+.profile-item-name {
+  flex: 1;
+  min-width: 0;
+  font-weight: 500;
+  overflow-wrap: anywhere;
+}
+
+.profile-lock-indicator {
+  font-size: 0.7rem;
+  font-weight: 700;
+  letter-spacing: 0.04em;
+  color: var(--muted);
+  border: 1px solid var(--border);
+  border-radius: 5px;
+  padding: 0.15rem 0.4rem;
+  white-space: nowrap;
+  flex-shrink: 0;
+}
+
+.new-profile-btn {
+  display: block;
+  width: 100%;
+  padding: 0.75rem 1rem;
+  border: 1.5px dashed var(--border);
+  border-radius: 14px;
+  background: transparent;
+  color: var(--muted);
+  font-size: 0.95rem;
+  font-weight: 600;
+  cursor: pointer;
+  text-align: center;
+  transition: border-color 120ms ease, color 120ms ease, background 120ms ease;
+}
+
+.new-profile-btn:hover {
+  border-color: var(--accent);
+  color: var(--accent);
+  background: color-mix(in srgb, var(--accent) 6%, transparent);
+}
+
+/* Profile create / unlock sub-screens */
+
+#profile-create-screen,
+#profile-unlock-screen {
+  padding-top: 0.25rem;
+}
+
+#profile-create-screen .back-link,
+#profile-unlock-screen .back-link {
+  display: inline-block;
+  margin-bottom: 1.5rem;
+}
+
+#profile-create-screen h2,
+#profile-unlock-screen h2 {
+  font-size: 1.5rem;
+  font-weight: 800;
+  letter-spacing: -0.02em;
+  margin: 0 0 1.5rem;
+  overflow-wrap: anywhere;
+}
+
+.profile-unlock-header {
+  display: flex;
+  align-items: center;
+  gap: 0.6rem;
+  margin-bottom: 1.5rem;
+}
+
+.profile-unlock-header h2 {
+  margin-bottom: 0;
+}
+
+/* Form fields used in profile create / unlock */
+
+.field {
+  display: flex;
+  flex-direction: column;
+  gap: 0.35rem;
+  margin-bottom: 1rem;
+}
+
+.field label {
+  font-size: 0.875rem;
+  font-weight: 600;
+}
+
+.label-hint {
+  font-weight: 400;
+  color: var(--muted);
+}
+
+.field input {
+  padding: 0.65rem 0.85rem;
+  border: 1px solid var(--border);
+  border-radius: 10px;
+  background: var(--surface);
+  color: var(--text);
+  font-size: 1rem;
+  transition: border-color 120ms ease, box-shadow 120ms ease;
+}
+
+.field input:focus-visible {
+  outline: none;
+  border-color: var(--accent);
+  box-shadow: 0 0 0 3px color-mix(in srgb, var(--accent) 20%, transparent);
+}
+
+/* Full-width primary action button (create / unlock) */
+
+.primary-btn {
+  display: block;
+  width: 100%;
+  margin-top: 0.25rem;
+  padding: 0.7rem 1rem;
+  border: none;
+  border-radius: 10px;
+  background: var(--accent);
+  color: white;
+  font-size: 1rem;
+  font-weight: 600;
+  cursor: pointer;
+  transition: background 120ms ease, transform 80ms ease;
+}
+
+.primary-btn:hover {
+  background: var(--accent-hover);
+}
+
+.primary-btn:active {
+  transform: scale(0.98);
+}
+
+/* ─── Profile bar (home view header) ───────────────────────────────────────── */
+
+/* Small row above h1 showing the active profile name and a Lock button. */
+.profile-bar {
+  display: flex;
+  align-items: center;
+  justify-content: flex-end;
+  gap: 0.5rem;
+  margin-bottom: 0.4rem;
+}
+
+.active-profile-label {
+  font-size: 0.8rem;
+  color: var(--muted);
+  font-weight: 500;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  max-width: 12rem;
+}
+
+.lock-btn {
+  border: 1px solid var(--border);
+  background: var(--bg);
+  color: var(--muted);
+  border-radius: 8px;
+  padding: 0.25rem 0.65rem;
+  font-size: 0.8rem;
+  font-weight: 600;
+  cursor: pointer;
+  white-space: nowrap;
+  transition: background 120ms ease, color 120ms ease;
+}
+
+.lock-btn:hover {
+  background: var(--border);
+  color: var(--text);
+}
+
+/* ─── Detail nav (back link + lock button) ─────────────────────────────────── */
+
+.detail-nav {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  margin-bottom: 1.5rem;
+}
+
+/* The back-link used to have its own margin-bottom; the wrapper now owns it. */
+.detail-nav .back-link {
+  margin-bottom: 0;
+}
+
+/* Enlarge list +/− buttons to a comfortable touch target on coarse-pointer
+   (touch) devices without affecting the visual size on desktop. */
+@media (pointer: coarse) {
+  .counter-controls button {
+    width: 2.75rem;
+    height: 2.75rem;
+  }
+}
+
+/* On very narrow viewports (≤ 360 px) the single-row counter layout gets
+   cramped. Switch to a two-row grid: name on top, controls below. This also
+   serves as a stable base for any future counter-row additions — anything
+   placed inside .counter-main will slot into the grid automatically. */
+@media (max-width: 360px) {
+  .counter-main {
+    display: grid;
+    grid-template-columns: auto 1fr auto;
+    grid-template-rows: auto auto;
+    gap: 0.35rem 0.6rem;
+    align-items: center;
+  }
+
+  .counter-dot      { grid-column: 1; grid-row: 1; }
+  .counter-name     { grid-column: 2; grid-row: 1; }
+  .remove           { grid-column: 3; grid-row: 1; }
+  /* Controls drop under the name, keeping dot column empty for alignment. */
+  .counter-controls { grid-column: 2; grid-row: 2; }
+
+  /* Confirm bar (shown on delete) is a sibling of .counter-main, not inside
+     it, so it isn't affected by the grid above. Ensure it wraps on narrow
+     screens so the two buttons never clip off screen. */
+  .counter-confirm {
+    flex-wrap: wrap;
+  }
 }
