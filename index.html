@@ -108,12 +108,7 @@
       <p id="history-empty" hidden>No taps logged yet — use +/&minus; above.</p>
 
       <div class="detail-delete">
-        <button id="delete-counter-btn" class="danger-outline-btn" type="button" aria-expanded="false">Delete counter</button>
-        <div id="delete-confirm" class="confirm-bar" hidden>
-          <span class="confirm-text">Delete this counter and its full history? This can't be undone.</span>
-          <button id="delete-cancel-btn" class="confirm-cancel-btn" type="button">Cancel</button>
-          <button id="delete-confirm-btn" class="confirm-delete-btn" type="button">Delete</button>
-        </div>
+        <button id="delete-counter-btn" class="danger-outline-btn" type="button">Delete counter</button>
       </div>
     </section>
   </main>
@@ -138,15 +133,19 @@
           <span class="counter-count" aria-live="polite">0</span>
           <button class="increment" aria-label="Increment">+</button>
         </div>
-        <button class="remove" aria-label="Delete counter" aria-expanded="false">&times;</button>
-      </div>
-      <div class="counter-confirm confirm-bar">
-        <span class="confirm-text">Delete this counter?</span>
-        <button class="confirm-cancel-btn" type="button">Cancel</button>
-        <button class="confirm-delete-btn" type="button">Delete</button>
+        <button class="remove" aria-label="Delete counter">&times;</button>
       </div>
     </li>
   </template>
+
+  <dialog id="delete-modal" aria-labelledby="delete-modal-title">
+    <h2 id="delete-modal-title"></h2>
+    <p class="modal-message">This can't be undone.</p>
+    <div class="modal-actions">
+      <button id="delete-modal-cancel" class="modal-cancel-btn" type="button">Cancel</button>
+      <button id="delete-modal-confirm" class="modal-confirm-btn" type="button">Delete</button>
+    </div>
+  </dialog>
 
   <!-- Visually hidden live region for screen-reader announcements. -->
   <p id="sr-announce" class="sr-only" aria-live="polite" aria-atomic="true"></p>

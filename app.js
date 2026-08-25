@@ -39,9 +39,10 @@ const historyListEl = document.getElementById("history-list");
 const historyEmptyEl = document.getElementById("history-empty");
 const backLinkEl = document.getElementById("back-link");
 const deleteBtnEl = document.getElementById("delete-counter-btn");
-const deleteConfirmEl = document.getElementById("delete-confirm");
-const deleteCancelBtnEl = document.getElementById("delete-cancel-btn");
-const deleteConfirmBtnEl = document.getElementById("delete-confirm-btn");
+const deleteModalEl = document.getElementById("delete-modal");
+const deleteModalTitleEl = document.getElementById("delete-modal-title");
+const deleteModalCancelEl = document.getElementById("delete-modal-cancel");
+const deleteModalConfirmEl = document.getElementById("delete-modal-confirm");
 
 // --- DOM refs: profile view ---
 
@@ -429,7 +430,6 @@ function renderDetail(id) {
   renderHistory(counter);
 
   deleteBtnEl.hidden = false;
-  deleteConfirmEl.hidden = true;
 }
 
 function updateDetailCount(counter) {
@@ -601,6 +601,31 @@ profileUnlockPinEl.addEventListener("input", () => {
   }
 });
 
+// --- Delete confirmation modal ---
+
+// Returns a Promise that resolves to true (confirmed) or false (cancelled).
+// Uses the native <dialog> element so focus is trapped and Escape cancels.
+let _deleteModalResolve = null;
+
+deleteModalEl.addEventListener("close", () => {
+  if (_deleteModalResolve) {
+    _deleteModalResolve(deleteModalEl.returnValue === "confirm");
+    _deleteModalResolve = null;
+  }
+});
+
+deleteModalCancelEl.addEventListener("click", () => deleteModalEl.close("cancel"));
+deleteModalConfirmEl.addEventListener("click", () => deleteModalEl.close("confirm"));
+
+function openDeleteModal(counterName) {
+  deleteModalTitleEl.textContent = `Delete "${counterName}"?`;
+  return new Promise((resolve) => {
+    _deleteModalResolve = resolve;
+    deleteModalEl.showModal();
+    deleteModalCancelEl.focus();
+  });
+}
+
 // --- Event wiring: lock ---
 
 if (lockBtnEl) lockBtnEl.addEventListener("click", handleLock);
@@ -664,15 +689,9 @@ listEl.addEventListener("click", async (e) => {
   if (e.target.closest(".increment")) await changeCount(id, 1);
   else if (e.target.closest(".decrement")) await changeCount(id, -1);
   else if (e.target.closest(".remove")) {
-    li.classList.add("confirming");
-    li.querySelector(".remove").setAttribute("aria-expanded", "true");
-    li.querySelector(".confirm-cancel-btn").focus();
-  } else if (e.target.closest(".confirm-cancel-btn")) {
-    li.classList.remove("confirming");
-    const removeBtn = li.querySelector(".remove");
-    removeBtn.setAttribute("aria-expanded", "false");
-    removeBtn.focus();
-  } else if (e.target.closest(".confirm-delete-btn")) await removeCounter(id);
+    const name = counters.find((c) => c.id === id)?.name ?? "this counter";
+    if (await openDeleteModal(name)) await removeCounter(id);
+  }
   // .counter-name is a plain <a href="#/counter/..."> — let it navigate natively.
 });
 
@@ -693,49 +712,15 @@ backLinkEl.addEventListener("click", (e) => {
   location.hash = "";
 });
 
-deleteBtnEl.addEventListener("click", () => {
-  deleteBtnEl.hidden = true;
-  deleteBtnEl.setAttribute("aria-expanded", "true");
-  deleteConfirmEl.hidden = false;
-  deleteCancelBtnEl.focus();
-});
-
-deleteCancelBtnEl.addEventListener("click", () => {
-  deleteConfirmEl.hidden = true;
-  deleteBtnEl.hidden = false;
-  deleteBtnEl.setAttribute("aria-expanded", "false");
-  deleteBtnEl.focus();
-});
-
-function dismissDetailConfirm() {
-  if (!deleteConfirmEl.hidden) {
-    deleteConfirmEl.hidden = true;
-    deleteBtnEl.hidden = false;
-    deleteBtnEl.setAttribute("aria-expanded", "false");
-    deleteBtnEl.focus();
-  }
-}
-
-deleteConfirmBtnEl.addEventListener("click", async () => {
+deleteBtnEl.addEventListener("click", async () => {
   const { id } = currentRoute();
-  if (id) await removeCounter(id);
-  location.hash = "";
-});
-
-// Escape key: dismiss any open confirmation bar (list or detail view).
-document.addEventListener("keydown", (e) => {
-  if (e.key !== "Escape") return;
-  // Detail view confirmation.
-  if (!detailViewEl.hidden) { dismissDetailConfirm(); return; }
-  // List view confirmation — find the confirming item.
-  const confirmingLi = listEl.querySelector(".counter.confirming");
-  if (confirmingLi) {
-    confirmingLi.classList.remove("confirming");
-    const removeBtn = confirmingLi.querySelector(".remove");
-    removeBtn.setAttribute("aria-expanded", "false");
-    removeBtn.focus();
+  const name = counters.find((c) => c.id === id)?.name ?? "this counter";
+  if (await openDeleteModal(name)) {
+    if (id) await removeCounter(id);
+    location.hash = "";
   }
 });
+
 
 // --- Server sync (real-time cross-device) ---
 //
