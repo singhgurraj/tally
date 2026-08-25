@@ -111,7 +111,7 @@ app.post("/api/taps", (req, res) => {
   // Group broadcasts by profile so we only iterate wsClients once per profile.
   const broadcastQueue = new Map(); // profileId → [msg, ...]
 
-  for (const { profileId, counterId, name, delta, at } of taps) {
+  for (const { profileId, counterId, name, delta, at, tz } of taps) {
     if (
       typeof profileId !== "string" ||
       typeof counterId !== "string" ||
@@ -120,6 +120,8 @@ app.post("/api/taps", (req, res) => {
     ) {
       continue; // skip malformed entries, process the rest
     }
+    // tz is optional (absent in taps from older clients); validate if present.
+    const safeTz = typeof tz === "string" && tz ? tz : undefined;
 
     if (!profileStates[profileId]) profileStates[profileId] = {};
     const ps = profileStates[profileId];
@@ -147,11 +149,14 @@ app.post("/api/taps", (req, res) => {
 
     if (name) c.name = name;
     c.count += delta;
-    c.history.push({ delta, at });
+    c.history.push({ delta, at, ...(safeTz ? { tz: safeTz } : {}) });
     if (c.history.length > 500) c.history.splice(0, c.history.length - 500);
 
     if (!broadcastQueue.has(profileId)) broadcastQueue.set(profileId, []);
-    broadcastQueue.get(profileId).push({ type: "tap", counterId, delta, at, count: c.count });
+    broadcastQueue.get(profileId).push({
+      type: "tap", counterId, delta, at, count: c.count,
+      ...(safeTz ? { tz: safeTz } : {}),
+    });
   }
 
   if (broadcastQueue.size > 0) {

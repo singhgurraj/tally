@@ -9,7 +9,7 @@
 <body>
   <main>
     <p id="storage-warning" role="alert" hidden>
-      ⚠ Changes aren't being saved — local storage is unavailable in this browser (private browsing or storage may be disabled).
+      ⚠ Changes aren't being saved — storage is unavailable or full (try clearing some data, or check whether private browsing is blocking storage).
     </p>
 
     <!-- Profile selection / creation / unlock screens -->
@@ -78,7 +78,7 @@
         <p id="name-error" class="name-error" role="alert" hidden></p>
       </header>
 
-      <ul id="counter-list"></ul>
+      <ul id="counter-list" role="list"></ul>
 
       <div id="empty-state" hidden>
         <span class="empty-icon" aria-hidden="true">＋</span>
@@ -104,11 +104,11 @@
       </div>
 
       <h3 class="history-heading">History</h3>
-      <ul id="history-list"></ul>
+      <ul id="history-list" role="list"></ul>
       <p id="history-empty" hidden>No taps logged yet — use +/&minus; above.</p>
 
       <div class="detail-delete">
-        <button id="delete-counter-btn" class="danger-outline-btn" type="button">Delete counter</button>
+        <button id="delete-counter-btn" class="danger-outline-btn" type="button" aria-expanded="false">Delete counter</button>
         <div id="delete-confirm" class="confirm-bar" hidden>
           <span class="confirm-text">Delete this counter and its full history? This can't be undone.</span>
           <button id="delete-cancel-btn" class="confirm-cancel-btn" type="button">Cancel</button>
@@ -138,7 +138,7 @@
           <span class="counter-count" aria-live="polite">0</span>
           <button class="increment" aria-label="Increment">+</button>
         </div>
-        <button class="remove" aria-label="Delete counter">&times;</button>
+        <button class="remove" aria-label="Delete counter" aria-expanded="false">&times;</button>
       </div>
       <div class="counter-confirm confirm-bar">
         <span class="confirm-text">Delete this counter?</span>
@@ -147,6 +147,9 @@
       </div>
     </li>
   </template>
+
+  <!-- Visually hidden live region for screen-reader announcements. -->
+  <p id="sr-announce" class="sr-only" aria-live="polite" aria-atomic="true"></p>
 
   <script src="counters.js"></script>
   <script src="app.js"></script>

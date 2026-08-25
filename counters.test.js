@@ -418,13 +418,37 @@ describe("hashPIN", () => {
 // ---------------------------------------------------------------------------
 
 describe("formatTime", () => {
+  // 2001-09-09T01:46:40.000Z — a well-known epoch-boundary timestamp.
+  // UTC 01:46 → Tokyo 10:46 (UTC+9) → New York 21:46 prev day (UTC-4 EDT).
+  // All three renderings must be distinct, proving the tz argument is used.
+  const KNOWN_AT = 1_000_000_000_000;
+
   it("returns a non-empty string for a valid timestamp", () => {
-    const result = formatTime(Date.now());
-    assert.ok(typeof result === "string" && result.length > 0);
+    assert.ok(typeof formatTime(Date.now()) === "string" && formatTime(Date.now()).length > 0);
   });
 
   it("returns a non-empty string for epoch zero", () => {
     const result = formatTime(0);
+    assert.ok(typeof result === "string" && result.length > 0);
+  });
+
+  it("renders the same UTC timestamp differently across timezones", () => {
+    const utc = formatTime(KNOWN_AT, "UTC");
+    const tok = formatTime(KNOWN_AT, "Asia/Tokyo");
+    const nyc = formatTime(KNOWN_AT, "America/New_York");
+    assert.notEqual(utc, tok, "UTC vs Tokyo should differ");
+    assert.notEqual(utc, nyc, "UTC vs New York should differ");
+    assert.notEqual(tok, nyc, "Tokyo vs New York should differ");
+  });
+
+  it("falls back gracefully when tz is undefined (legacy entries)", () => {
+    const result = formatTime(KNOWN_AT, undefined);
+    assert.ok(typeof result === "string" && result.length > 0);
+  });
+
+  it("falls back gracefully when tz is an unrecognised string", () => {
+    assert.doesNotThrow(() => formatTime(KNOWN_AT, "Not/A/Timezone"));
+    const result = formatTime(KNOWN_AT, "Not/A/Timezone");
     assert.ok(typeof result === "string" && result.length > 0);
   });
 });

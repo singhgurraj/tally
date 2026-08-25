@@ -209,11 +209,16 @@ function accentFor(id) {
   return ACCENT_COLORS[hash % ACCENT_COLORS.length];
 }
 
-function formatTime(at) {
-  return new Date(at).toLocaleString(undefined, {
-    dateStyle: "medium",
-    timeStyle: "medium",
-  });
+function formatTime(at, tz) {
+  const opts = { dateStyle: "medium", timeStyle: "medium" };
+  if (tz) opts.timeZone = tz;
+  try {
+    return new Date(at).toLocaleString(undefined, opts);
+  } catch {
+    // tz string was unrecognised (e.g. data from a future app version);
+    // fall back to the device's current timezone rather than throwing.
+    return new Date(at).toLocaleString(undefined, { dateStyle: "medium", timeStyle: "medium" });
+  }
 }
 
 // ─── PIN hashing ──────────────────────────────────────────────────────────────

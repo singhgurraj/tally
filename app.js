@@ -196,7 +196,7 @@ function showProfileCreateScreen() {
   profileListScreenEl.hidden = true;
   profileCreateScreenEl.hidden = false;
   profileUnlockScreenEl.hidden = true;
-  profileCreateErrorEl.hidden = true;
+  clearError(profileCreateErrorEl);
   profileNameInputEl.value = "";
   profilePinInputEl.value = "";
   requestAnimationFrame(() => profileNameInputEl.focus());
@@ -214,7 +214,7 @@ function showUnlockScreen(profileId) {
   unlockDotEl.style.setProperty("--accent-color", accentFor(profile.id));
   unlockProfileNameEl.textContent = profile.name;
   profileUnlockPinEl.value = "";
-  profileUnlockErrorEl.hidden = true;
+  clearError(profileUnlockErrorEl);
   requestAnimationFrame(() => profileUnlockPinEl.focus());
 }
 
@@ -344,6 +344,7 @@ async function addCounter(name) {
 
   if (!outcome.ok) return outcome;
 
+  announce(`Counter "${name}" added.`);
   renderHome();
   const newLi = listEl.lastElementChild;
   if (newLi) {
@@ -354,6 +355,7 @@ async function addCounter(name) {
 }
 
 async function removeCounter(id) {
+  const target = counters.find((c) => c.id === id);
   try {
     await mutateCounters(() => {
       counters = counters.filter((c) => c.id !== id);
@@ -361,6 +363,7 @@ async function removeCounter(id) {
   } catch {
     return;
   }
+  if (target) announce(`Counter "${target.name}" deleted.`);
   renderHome();
 }
 
@@ -372,8 +375,10 @@ async function changeCount(id, delta) {
     counter = await mutateCounters(() => {
       const c = counters.find((item) => item.id === id);
       if (!c) return null;
+      const at = Date.now();
+      const tz = Intl.DateTimeFormat().resolvedOptions().timeZone || undefined;
       c.count += delta;
-      c.history.push({ delta, at: Date.now() });
+      c.history.push({ delta, at, tz });
       if (c.history.length > HISTORY_STORE_LIMIT) {
         c.history.splice(0, c.history.length - HISTORY_STORE_LIMIT);
       }
@@ -386,7 +391,7 @@ async function changeCount(id, delta) {
 
   // Add to the outgoing queue; the background timer will batch-flush it.
   const tapEntry = counter.history[counter.history.length - 1];
-  enqueueTap(id, counter.name, delta, tapEntry.at);
+  enqueueTap(id, counter.name, delta, tapEntry.at, tapEntry.tz);
 
   const route = currentRoute();
   if (route.view === "detail" && route.id === id) {
@@ -442,7 +447,7 @@ function buildHistoryEntry(entry) {
 
   const timeEl = document.createElement("span");
   timeEl.className = "history-time";
-  timeEl.textContent = formatTime(entry.at);
+  timeEl.textContent = formatTime(entry.at, entry.tz);
 
   li.appendChild(deltaEl);
   li.appendChild(timeEl);
@@ -527,35 +532,38 @@ profileCreateFormEl.addEventListener("submit", async (e) => {
 
   const meta = loadMeta();
   if (meta.profiles.some((p) => p.name.toLowerCase() === name.toLowerCase())) {
-    profileCreateErrorEl.textContent = "A profile with that name already exists.";
-    profileCreateErrorEl.hidden = false;
+    showError(profileCreateErrorEl, "A profile with that name already exists.");
     profileNameInputEl.select();
     return;
   }
 
   const pin = profilePinInputEl.value;
   if (pin && !/^\d{4}$/.test(pin)) {
-    profileCreateErrorEl.textContent = "PIN must be exactly 4 digits (0–9).";
-    profileCreateErrorEl.hidden = false;
+    showError(profileCreateErrorEl, "PIN must be exactly 4 digits (0–9).");
     profilePinInputEl.select();
     return;
   }
 
-  profileCreateErrorEl.hidden = true;
+  clearError(profileCreateErrorEl);
 
   const profileId = crypto.randomUUID();
   const pinHash = pin ? await hashPIN(pin, profileId) : null;
 
-  await mutateMeta((meta) => {
-    meta.profiles.push({ id: profileId, name, pinHash });
-  });
+  try {
+    await mutateMeta((meta) => {
+      meta.profiles.push({ id: profileId, name, pinHash });
+    });
+  } catch {
+    showError(profileCreateErrorEl, "Couldn't save — storage may be full or unavailable.");
+    return;
+  }
 
   activateProfile(profileId);
   renderApp();
 });
 
-profileNameInputEl.addEventListener("input", () => { profileCreateErrorEl.hidden = true; });
-profilePinInputEl.addEventListener("input", () => { profileCreateErrorEl.hidden = true; });
+profileNameInputEl.addEventListener("input", () => clearError(profileCreateErrorEl));
+profilePinInputEl.addEventListener("input", () => clearError(profileCreateErrorEl));
 
 unlockCancelLinkEl.addEventListener("click", (e) => {
   e.preventDefault();
@@ -573,20 +581,19 @@ profileUnlockFormEl.addEventListener("submit", async (e) => {
 
   const entered = await hashPIN(pin, profileId);
   if (entered !== profile.pinHash) {
-    profileUnlockErrorEl.textContent = "Incorrect PIN. Try again.";
-    profileUnlockErrorEl.hidden = false;
+    showError(profileUnlockErrorEl, "Incorrect PIN. Try again.");
     profileUnlockPinEl.value = "";
     profileUnlockPinEl.focus();
     return;
   }
 
-  profileUnlockErrorEl.hidden = true;
+  clearError(profileUnlockErrorEl);
   activateProfile(profileId);
   renderApp();
 });
 
 profileUnlockPinEl.addEventListener("input", () => {
-  profileUnlockErrorEl.hidden = true;
+  clearError(profileUnlockErrorEl);
   // Auto-submit as soon as 4 digits are entered so the user doesn't have to
   // press Unlock or hit Enter.
   if (profileUnlockPinEl.value.length === 4) {
@@ -602,18 +609,30 @@ if (detailLockBtnEl) detailLockBtnEl.addEventListener("click", handleLock);
 // --- Event wiring: home view ---
 
 const nameErrorEl = document.getElementById("name-error");
+const srAnnounceEl = document.getElementById("sr-announce");
 
-function showNameError(msg) {
-  nameErrorEl.textContent = msg;
-  nameErrorEl.hidden = false;
+function announce(msg) {
+  if (!srAnnounceEl) return;
+  // Clear first so identical consecutive messages still fire for screen readers.
+  srAnnounceEl.textContent = "";
+  requestAnimationFrame(() => { srAnnounceEl.textContent = msg; });
 }
 
-function clearNameError() {
-  nameErrorEl.hidden = true;
-  nameErrorEl.textContent = "";
+// Generic helpers for inline field-level error messages.
+// Pass the specific error <p> element and the message string.
+// Every error site in the app uses these two functions so the pattern
+// stays consistent as new features are added.
+function showError(el, msg) {
+  el.textContent = msg;
+  el.hidden = false;
 }
 
-nameInputEl.addEventListener("input", clearNameError);
+function clearError(el) {
+  el.hidden = true;
+  el.textContent = "";
+}
+
+nameInputEl.addEventListener("input", () => clearError(nameErrorEl));
 
 formEl.addEventListener("submit", async (e) => {
   e.preventDefault();
@@ -622,12 +641,17 @@ formEl.addEventListener("submit", async (e) => {
   const result = await addCounter(name);
   if (!result.ok) {
     if (result.reason === "duplicate") {
-      showNameError("A counter with that name already exists.");
+      showError(nameErrorEl, "A counter with that name already exists.");
       nameInputEl.select();
+    } else {
+      // Storage quota exceeded, unavailable, or other write failure.
+      // The storage-warning banner is also shown by mutateCounters, but an
+      // inline message here tells the user exactly which action failed.
+      showError(nameErrorEl, "Couldn't save — storage may be full or unavailable.");
     }
     return;
   }
-  clearNameError();
+  clearError(nameErrorEl);
   nameInputEl.value = "";
   nameInputEl.focus();
 });
@@ -641,10 +665,13 @@ listEl.addEventListener("click", async (e) => {
   else if (e.target.closest(".decrement")) await changeCount(id, -1);
   else if (e.target.closest(".remove")) {
     li.classList.add("confirming");
+    li.querySelector(".remove").setAttribute("aria-expanded", "true");
     li.querySelector(".confirm-cancel-btn").focus();
   } else if (e.target.closest(".confirm-cancel-btn")) {
     li.classList.remove("confirming");
-    li.querySelector(".remove").focus();
+    const removeBtn = li.querySelector(".remove");
+    removeBtn.setAttribute("aria-expanded", "false");
+    removeBtn.focus();
   } else if (e.target.closest(".confirm-delete-btn")) await removeCounter(id);
   // .counter-name is a plain <a href="#/counter/..."> — let it navigate natively.
 });
@@ -668,6 +695,7 @@ backLinkEl.addEventListener("click", (e) => {
 
 deleteBtnEl.addEventListener("click", () => {
   deleteBtnEl.hidden = true;
+  deleteBtnEl.setAttribute("aria-expanded", "true");
   deleteConfirmEl.hidden = false;
   deleteCancelBtnEl.focus();
 });
@@ -675,13 +703,38 @@ deleteBtnEl.addEventListener("click", () => {
 deleteCancelBtnEl.addEventListener("click", () => {
   deleteConfirmEl.hidden = true;
   deleteBtnEl.hidden = false;
+  deleteBtnEl.setAttribute("aria-expanded", "false");
   deleteBtnEl.focus();
 });
+
+function dismissDetailConfirm() {
+  if (!deleteConfirmEl.hidden) {
+    deleteConfirmEl.hidden = true;
+    deleteBtnEl.hidden = false;
+    deleteBtnEl.setAttribute("aria-expanded", "false");
+    deleteBtnEl.focus();
+  }
+}
 
 deleteConfirmBtnEl.addEventListener("click", async () => {
   const { id } = currentRoute();
   if (id) await removeCounter(id);
   location.hash = "";
+});
+
+// Escape key: dismiss any open confirmation bar (list or detail view).
+document.addEventListener("keydown", (e) => {
+  if (e.key !== "Escape") return;
+  // Detail view confirmation.
+  if (!detailViewEl.hidden) { dismissDetailConfirm(); return; }
+  // List view confirmation — find the confirming item.
+  const confirmingLi = listEl.querySelector(".counter.confirming");
+  if (confirmingLi) {
+    confirmingLi.classList.remove("confirming");
+    const removeBtn = confirmingLi.querySelector(".remove");
+    removeBtn.setAttribute("aria-expanded", "false");
+    removeBtn.focus();
+  }
 });
 
 // --- Server sync (real-time cross-device) ---
@@ -755,14 +808,14 @@ function startSyncTimer() {
 
 // Enqueue one tap.  Called immediately on every local tap so the key is
 // recorded before any WS echo can arrive.
-function enqueueTap(counterId, counterName, delta, at) {
+function enqueueTap(counterId, counterName, delta, at, tz) {
   const key = `${counterId}:${at}`;
   sentTapKeys.add(key);
   if (sentTapKeys.size > 500) {
     const arr = [...sentTapKeys];
     arr.slice(0, 250).forEach((k) => sentTapKeys.delete(k));
   }
-  tapQueue.push({ profileId: activeProfileId, counterId, name: counterName, delta, at });
+  tapQueue.push({ profileId: activeProfileId, counterId, name: counterName, delta, at, tz });
 }
 
 // Drain the queue with a single POST.  On network failure the batch is put
@@ -783,7 +836,7 @@ async function flushTapQueue() {
 }
 
 // Apply a single tap received from another device via WebSocket.
-function applySyncedTap({ counterId, delta, at, count }) {
+function applySyncedTap({ counterId, delta, at, count, tz }) {
   const key = `${counterId}:${at}`;
   if (sentTapKeys.has(key)) {
     sentTapKeys.delete(key);
@@ -795,7 +848,7 @@ function applySyncedTap({ counterId, delta, at, count }) {
 
   // Use the server's authoritative running total to prevent drift.
   c.count = count;
-  c.history.push({ delta, at });
+  c.history.push({ delta, at, ...(tz ? { tz } : {}) });
   if (c.history.length > HISTORY_STORE_LIMIT) {
     c.history.splice(0, c.history.length - HISTORY_STORE_LIMIT);
   }
