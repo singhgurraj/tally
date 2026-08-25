@@ -165,9 +165,13 @@ function activateProfile(profileId) {
   activeProfileId = profileId;
   setSession(profileId);
   counters = loadCounters(activeProfileId);
+  syncConnect();
+  startSyncTimer();
 }
 
 function handleLock() {
+  flushTapQueue(); // best-effort: drain before disconnecting
+  syncDisconnect();
   clearSession();
   activeProfileId = null;
   counters = [];
@@ -379,6 +383,10 @@ async function changeCount(id, delta) {
     return;
   }
   if (!counter) return;
+
+  // Add to the outgoing queue; the background timer will batch-flush it.
+  const tapEntry = counter.history[counter.history.length - 1];
+  enqueueTap(id, counter.name, delta, tapEntry.at);
 
   const route = currentRoute();
   if (route.view === "detail" && route.id === id) {
@@ -676,6 +684,185 @@ deleteConfirmBtnEl.addEventListener("click", async () => {
   location.hash = "";
 });
 
+// --- Server sync (real-time cross-device) ---
+//
+// Taps are accumulated in `tapQueue` and flushed to /api/taps on a fixed
+// interval.  The server applies the whole batch atomically and broadcasts each
+// tap via WebSocket so other connected devices update immediately.
+//
+// On flaky connections the flush simply fails and the queue is kept intact;
+// the next scheduled flush will retry the same taps.  The queue is also
+// drained eagerly when the tab goes hidden and on page unload (via sendBeacon)
+// so background-tab and close scenarios don't silently drop taps.
+//
+// Echo suppression: we record each enqueued tap's (counterId, at) key and
+// ignore WS messages that match — they are echoes of our own taps that have
+// already been applied locally.
+//
+// WebSocket reconnection: a closed connection is retried after 3 s.
+
+const SYNC_INTERVAL_MS = 3000;
+
+let syncWs = null;
+let syncReconnectTimer = null;
+let syncIntervalTimer = null;
+
+const tapQueue = []; // { profileId, counterId, name, delta, at }
+const sentTapKeys = new Set(); // (counterId:at) keys to suppress WS echoes
+
+function syncConnect() {
+  if (!activeProfileId || syncWs) return;
+  const wsUrl = location.origin.replace(/^http/, "ws") + "/ws";
+  const ws = new WebSocket(wsUrl);
+  syncWs = ws;
+
+  ws.addEventListener("open", () => {
+    ws.send(JSON.stringify({ type: "subscribe", profileId: activeProfileId }));
+  });
+
+  ws.addEventListener("message", (e) => {
+    try {
+      const msg = JSON.parse(e.data);
+      if (msg.type === "tap") applySyncedTap(msg);
+      else if (msg.type === "state") applySyncedState(msg.counters);
+    } catch {}
+  });
+
+  ws.addEventListener("close", () => {
+    syncWs = null;
+    if (activeProfileId) {
+      syncReconnectTimer = setTimeout(syncConnect, 3000);
+    }
+  });
+
+  ws.addEventListener("error", () => ws.close());
+}
+
+function syncDisconnect() {
+  clearTimeout(syncReconnectTimer);
+  clearInterval(syncIntervalTimer);
+  syncIntervalTimer = null;
+  if (syncWs) {
+    syncWs.close();
+    syncWs = null;
+  }
+}
+
+function startSyncTimer() {
+  if (syncIntervalTimer) return;
+  syncIntervalTimer = setInterval(flushTapQueue, SYNC_INTERVAL_MS);
+}
+
+// Enqueue one tap.  Called immediately on every local tap so the key is
+// recorded before any WS echo can arrive.
+function enqueueTap(counterId, counterName, delta, at) {
+  const key = `${counterId}:${at}`;
+  sentTapKeys.add(key);
+  if (sentTapKeys.size > 500) {
+    const arr = [...sentTapKeys];
+    arr.slice(0, 250).forEach((k) => sentTapKeys.delete(k));
+  }
+  tapQueue.push({ profileId: activeProfileId, counterId, name: counterName, delta, at });
+}
+
+// Drain the queue with a single POST.  On network failure the batch is put
+// back at the front so it is retried on the next interval — no taps are lost.
+async function flushTapQueue() {
+  if (!activeProfileId || tapQueue.length === 0) return;
+  const batch = tapQueue.splice(0, tapQueue.length);
+  try {
+    const res = await fetch("/api/taps", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ taps: batch }),
+    });
+    if (!res.ok) throw new Error(`HTTP ${res.status}`);
+  } catch {
+    tapQueue.unshift(...batch); // restore for next attempt
+  }
+}
+
+// Apply a single tap received from another device via WebSocket.
+function applySyncedTap({ counterId, delta, at, count }) {
+  const key = `${counterId}:${at}`;
+  if (sentTapKeys.has(key)) {
+    sentTapKeys.delete(key);
+    return; // echo of our own tap — already applied locally
+  }
+
+  const c = counters.find((item) => item.id === counterId);
+  if (!c) return;
+
+  // Use the server's authoritative running total to prevent drift.
+  c.count = count;
+  c.history.push({ delta, at });
+  if (c.history.length > HISTORY_STORE_LIMIT) {
+    c.history.splice(0, c.history.length - HISTORY_STORE_LIMIT);
+  }
+
+  // Persist so other tabs on this device also pick up the remote tap.
+  try {
+    saveCounters(activeProfileId, counters);
+  } catch {}
+
+  // Update the display.
+  const route = currentRoute();
+  if (route.view === "detail" && route.id === counterId) {
+    updateDetailCount(c);
+    prependHistoryEntry(c.history[c.history.length - 1], c.history.length);
+  } else {
+    const li = listEl.querySelector(`.counter[data-id="${counterId}"]`);
+    const countEl = li?.querySelector(".counter-count");
+    if (countEl) {
+      countEl.textContent = c.count;
+      pulseElement(countEl);
+    }
+  }
+}
+
+// Apply the full server state received on WS connect — updates any counters
+// whose count has drifted (e.g. due to taps made on another device while this
+// device was offline).
+function applySyncedState(serverCounters) {
+  if (!Array.isArray(serverCounters) || serverCounters.length === 0) return;
+  let changed = false;
+  for (const sc of serverCounters) {
+    const c = counters.find((item) => item.id === sc.id);
+    if (!c) continue;
+    if (c.count !== sc.count) {
+      c.count = sc.count;
+      if (Array.isArray(sc.history) && sc.history.length > c.history.length) {
+        c.history = sc.history;
+      }
+      changed = true;
+    }
+  }
+  if (changed) {
+    try {
+      saveCounters(activeProfileId, counters);
+    } catch {}
+    renderApp();
+  }
+}
+
+// Flush eagerly when the tab goes to the background (user switches apps or
+// tabs) so the queue doesn't wait out the full interval unnecessarily.
+document.addEventListener("visibilitychange", () => {
+  if (document.visibilityState === "hidden") flushTapQueue();
+});
+
+// Use sendBeacon on page close — it survives the unload sequence unlike fetch.
+// Wrap the payload in a Blob so the browser sends Content-Type: application/json,
+// which express.json() can parse without special-casing.
+window.addEventListener("beforeunload", () => {
+  if (tapQueue.length > 0 && activeProfileId) {
+    const blob = new Blob([JSON.stringify({ taps: tapQueue })], {
+      type: "application/json",
+    });
+    navigator.sendBeacon?.("/api/taps", blob);
+  }
+});
+
 // --- Cross-tab sync ---
 
 window.addEventListener("hashchange", () => renderApp({ moveFocus: true }));
@@ -708,8 +895,7 @@ window.addEventListener("storage", (e) => {
   if (sessionId) {
     const meta = loadMeta();
     if (meta.profiles.some((p) => p.id === sessionId)) {
-      activeProfileId = sessionId;
-      counters = loadCounters(activeProfileId);
+      activateProfile(sessionId);
     }
   } else {
     // Auto-login when there is exactly one PIN-free profile — the common case
