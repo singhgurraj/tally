@@ -1,25 +1,47 @@
-// app.js — UI layer.  All pure data/storage functions live in counters.js and
-// are available here as browser globals (META_KEY, storageKey, loadCounters,
-// saveCounters, loadMeta, saveMeta, migrateIfNeeded, accentFor, formatTime,
-// hashPIN, ACCENT_COLORS, HISTORY_DISPLAY_LIMIT, HISTORY_STORE_LIMIT).
+// app.js — UI layer.  Counter data lives server-side (SQLite); this file
+// manages view state, API calls, and real-time WebSocket sync.
+// Utility globals from counters.js: accentFor, formatTime, HISTORY_DISPLAY_LIMIT,
+// HISTORY_STORE_LIMIT.  Chart functions from dashboard.js: renderDashboard, exportCSV.
 
-// sessionStorage key for the currently unlocked profile in this tab.
-// sessionStorage is tab-scoped and clears when the tab closes, so the unlock
-// state never carries over to a new browsing session on a shared machine.
-const SESSION_KEY = "tally.session";
-const META_LOCK_NAME = "tally.meta.lock";
+const FREE_COUNTER_LIMIT = 3;
 
-// Which profile is currently unlocked in this tab. null = profile screen shown.
-let activeProfileId = null;
+// Authenticated user.  null = not logged in.
+// Shape: { id: string, email: string, isPremium: boolean }
+let currentUser = null;
 
-/** @type {{id: string, name: string, count: number, history: {delta: number, at: number}[]}[]} */
+// Active share-link session.  null = normal flow.
+// Shape: { profileId: string, counterId: string, name: string, count: number }
+let sharedSession = null;
+
+// userId used for WS subscription / tap submission.
+function effectiveProfileId() {
+  return sharedSession ? sharedSession.profileId : currentUser?.id;
+}
+
+/** @type {{ id: string, name: string, count: number, history?: {delta:number,at:number,tz?:string}[] }[]} */
 let counters = [];
 
-// Tracks the counter ID last opened in detail view so focus can return to its
-// list item when the user navigates back.
 let lastDetailId = null;
 
-// --- DOM refs: home / detail ---
+// ─── DOM refs: auth view ───────────────────────────────────────────────────────
+
+const authViewEl = document.getElementById("auth-view");
+const authLoginScreenEl = document.getElementById("auth-login-screen");
+const authSignupScreenEl = document.getElementById("auth-signup-screen");
+const loginFormEl = document.getElementById("login-form");
+const loginEmailEl = document.getElementById("login-email");
+const loginPasswordEl = document.getElementById("login-password");
+const loginErrorEl = document.getElementById("login-error");
+const loginSubmitBtnEl = document.getElementById("login-submit-btn");
+const signupFormEl = document.getElementById("signup-form");
+const signupEmailEl = document.getElementById("signup-email");
+const signupPasswordEl = document.getElementById("signup-password");
+const signupErrorEl = document.getElementById("signup-error");
+const signupSubmitBtnEl = document.getElementById("signup-submit-btn");
+const showSignupLinkEl = document.getElementById("show-signup-link");
+const showLoginLinkEl = document.getElementById("show-login-link");
+
+// ─── DOM refs: home view ───────────────────────────────────────────────────────
 
 const homeViewEl = document.getElementById("home-view");
 const listEl = document.getElementById("counter-list");
@@ -28,6 +50,11 @@ const summaryEl = document.getElementById("counter-summary");
 const formEl = document.getElementById("new-counter-form");
 const nameInputEl = document.getElementById("new-counter-name");
 const templateEl = document.getElementById("counter-template");
+const activeProfileLabelEl = document.getElementById("active-profile-label");
+const premiumBadgeEl = document.getElementById("premium-badge");
+const logoutBtnEl = document.getElementById("logout-btn");
+
+// ─── DOM refs: detail view ─────────────────────────────────────────────────────
 
 const detailViewEl = document.getElementById("detail-view");
 const detailDotEl = document.getElementById("detail-dot");
@@ -44,251 +71,255 @@ const deleteModalTitleEl = document.getElementById("delete-modal-title");
 const deleteModalCancelEl = document.getElementById("delete-modal-cancel");
 const deleteModalConfirmEl = document.getElementById("delete-modal-confirm");
 
-// --- DOM refs: profile view ---
+// ─── DOM refs: dashboard view ──────────────────────────────────────────────────
 
-const profileViewEl = document.getElementById("profile-view");
-const profileListScreenEl = document.getElementById("profile-list-screen");
-const profileListEl = document.getElementById("profile-list");
-const profileEmptyEl = document.getElementById("profile-empty");
-const newProfileBtnEl = document.getElementById("new-profile-btn");
-const profileTemplateEl = document.getElementById("profile-template");
+const dashboardViewEl = document.getElementById("dashboard-view");
+const dashboardBackLinkEl = document.getElementById("dashboard-back-link");
+const exportCsvBtnEl = document.getElementById("export-csv-btn");
 
-const profileCreateScreenEl = document.getElementById("profile-create-screen");
-const createCancelLinkEl = document.getElementById("create-cancel-link");
-const profileCreateFormEl = document.getElementById("profile-create-form");
-const profileNameInputEl = document.getElementById("profile-name-input");
-const profilePinInputEl = document.getElementById("profile-pin-input");
-const profileCreateErrorEl = document.getElementById("profile-create-error");
+let dashboardDays = 7;
 
-const profileUnlockScreenEl = document.getElementById("profile-unlock-screen");
-const unlockCancelLinkEl = document.getElementById("unlock-cancel-link");
-const unlockDotEl = document.getElementById("unlock-dot");
-const unlockProfileNameEl = document.getElementById("unlock-profile-name");
-const profileUnlockFormEl = document.getElementById("profile-unlock-form");
-const profileUnlockPinEl = document.getElementById("profile-unlock-pin");
-const profileUnlockErrorEl = document.getElementById("profile-unlock-error");
+// ─── DOM refs: shared view ─────────────────────────────────────────────────────
 
-const activeProfileLabelEl = document.getElementById("active-profile-label");
-const lockBtnEl = document.getElementById("lock-btn");
-const detailLockBtnEl = document.getElementById("detail-lock-btn");
+const sharedViewEl = document.getElementById("shared-view");
+const sharedDotEl = document.getElementById("shared-dot");
+const sharedNameEl = document.getElementById("shared-name");
+const sharedCountEl = document.getElementById("shared-count");
+const sharedIncrementEl = document.getElementById("shared-increment");
+const sharedDecrementEl = document.getElementById("shared-decrement");
+const sharedBackLinkEl = document.getElementById("shared-back-link");
+const sharedPresenceEl = document.getElementById("shared-presence");
+const shareBtnEl = document.getElementById("share-btn");
+const detailPresenceEl = document.getElementById("detail-presence");
 
-// --- Storage helpers ---
+// ─── DOM refs: share modal ─────────────────────────────────────────────────────
 
-function setStorageWarning(show) {
-  const el = document.getElementById("storage-warning");
-  if (el) el.hidden = !show;
-}
+const shareModalEl = document.getElementById("share-modal");
+const shareCodeTextEl = document.getElementById("share-code-text");
+const shareUrlInputEl = document.getElementById("share-url-input");
+const shareModalCopyBtnEl = document.getElementById("share-modal-copy-btn");
+const shareModalCloseBtnEl = document.getElementById("share-modal-close-btn");
 
-// --- Cross-tab safe writes ---
-//
-// Each tab keeps its own in-memory `counters` array, so two tabs editing at
-// once can otherwise race: both read a stale snapshot, both write it back,
-// and whichever tab saves last silently drops the other tab's tap. To avoid
-// that, every mutation re-reads the latest data from localStorage and saves
-// again inside a single exclusive `navigator.locks` critical section, so a
-// tap always applies on top of the most current state instead of a stale
-// page-load snapshot. Locks API has near-universal support in evergreen
-// browsers on secure contexts (https, or localhost); where unavailable we
-// fall back to just re-reading fresh each time, which is not a hard
-// guarantee under literally simultaneous clicks but removes the dominant,
-// deterministic form of the bug (a tab clobbering another tab's earlier
-// write with a stale full-array snapshot).
+// ─── DOM refs: join modal ──────────────────────────────────────────────────────
 
-function withStorageLock(fn) {
-  // Use a per-profile lock name so two profiles tapping simultaneously don't
-  // contend with each other.
-  const lockName = activeProfileId
-    ? storageKey(activeProfileId) + ".lock"
-    : "tally.counters.lock";
-  if (typeof navigator !== "undefined" && navigator.locks?.request) {
-    return navigator.locks.request(lockName, () => fn());
-  }
-  return Promise.resolve().then(fn);
-}
+const joinBtnEl = document.getElementById("join-btn");
+const joinModalEl = document.getElementById("join-modal");
+const joinCodeInputEl = document.getElementById("join-code-input");
+const joinErrorEl = document.getElementById("join-error");
+const joinModalCancelBtnEl = document.getElementById("join-modal-cancel-btn");
+const joinModalSubmitBtnEl = document.getElementById("join-modal-submit-btn");
 
-// Runs `mutator` with `counters` refreshed from localStorage immediately
-// beforehand, then persists the result — all inside one exclusive lock so
-// no other tab's mutation can interleave. `mutator` reads/reassigns the
-// module-level `counters` directly and may return a value to hand back to
-// the caller (e.g. the counter that was just changed).
-function mutateCounters(mutator) {
-  return withStorageLock(() => {
-    counters = loadCounters(activeProfileId);
-    const snapshot = JSON.stringify(counters);
-    const result = mutator();
-    try {
-      saveCounters(activeProfileId, counters);
-      setStorageWarning(false);
-    } catch (err) {
-      counters = JSON.parse(snapshot);
-      setStorageWarning(true);
-      throw err;
+// ─── DOM refs: upgrade modal ───────────────────────────────────────────────────
+
+const upgradeModalEl = document.getElementById("upgrade-modal");
+const upgradeCancelBtnEl = document.getElementById("upgrade-cancel-btn");
+const upgradeConfirmBtnEl = document.getElementById("upgrade-confirm-btn");
+
+// ─── API helpers ───────────────────────────────────────────────────────────────
+
+async function fetchCurrentUser() {
+  try {
+    const res = await fetch("/api/auth/me");
+    if (res.ok) {
+      const { user, isPremium } = await res.json();
+      currentUser = { ...user, isPremium };
+    } else {
+      currentUser = null;
     }
-    return result;
-  });
-}
-
-function withMetaLock(fn) {
-  if (typeof navigator !== "undefined" && navigator.locks?.request) {
-    return navigator.locks.request(META_LOCK_NAME, () => fn());
+  } catch {
+    currentUser = null;
   }
-  return Promise.resolve().then(fn);
 }
 
-// Mutates the profile registry atomically, parallel to mutateCounters.
-// `mutator` receives the meta object and modifies it in place.
-function mutateMeta(mutator) {
-  return withMetaLock(() => {
-    const meta = loadMeta();
-    const result = mutator(meta);
-    saveMeta(meta);
-    return result;
+async function fetchCounters() {
+  try {
+    const res = await fetch("/api/counters");
+    if (res.ok) {
+      const data = await res.json();
+      counters = data.counters;
+    }
+  } catch {}
+}
+
+async function handleLogin(email, password) {
+  const res = await fetch("/api/auth/login", {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify({ email, password }),
   });
-}
-
-// --- Session management ---
-
-function getSession() {
-  try { return sessionStorage.getItem(SESSION_KEY) || null; } catch { return null; }
-}
-
-function setSession(profileId) {
-  try { sessionStorage.setItem(SESSION_KEY, profileId); } catch { /* unavailable */ }
-}
-
-function clearSession() {
-  try { sessionStorage.removeItem(SESSION_KEY); } catch { /* unavailable */ }
-}
-
-// --- Profile activation ---
-
-function activateProfile(profileId) {
-  activeProfileId = profileId;
-  setSession(profileId);
-  counters = loadCounters(activeProfileId);
+  const data = await res.json();
+  if (!res.ok) return { ok: false, error: data.error };
+  currentUser = { ...data.user, isPremium: data.isPremium };
+  await fetchCounters();
   syncConnect();
   startSyncTimer();
+  return { ok: true };
 }
 
-function handleLock() {
-  flushTapQueue(); // best-effort: drain before disconnecting
+async function handleSignup(email, password) {
+  const res = await fetch("/api/auth/signup", {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify({ email, password }),
+  });
+  const data = await res.json();
+  if (!res.ok) return { ok: false, error: data.error };
+  currentUser = { ...data.user, isPremium: false };
+  counters = [];
+  syncConnect();
+  startSyncTimer();
+  return { ok: true };
+}
+
+async function handleLogout() {
+  flushTapQueue();
   syncDisconnect();
-  clearSession();
-  activeProfileId = null;
+  await fetch("/api/auth/logout", { method: "POST" });
+  currentUser = null;
   counters = [];
   location.hash = "";
   renderApp();
 }
 
-// --- Profile view sub-screens ---
-
-function showProfileListScreen() {
-  profileListScreenEl.hidden = false;
-  profileCreateScreenEl.hidden = true;
-  profileUnlockScreenEl.hidden = true;
-  renderProfileList();
-  requestAnimationFrame(() => {
-    const first = profileListEl.querySelector(".profile-select-btn");
-    (first || newProfileBtnEl).focus();
-  });
-}
-
-function showProfileCreateScreen() {
-  profileListScreenEl.hidden = true;
-  profileCreateScreenEl.hidden = false;
-  profileUnlockScreenEl.hidden = true;
-  clearError(profileCreateErrorEl);
-  profileNameInputEl.value = "";
-  profilePinInputEl.value = "";
-  requestAnimationFrame(() => profileNameInputEl.focus());
-}
-
-function showUnlockScreen(profileId) {
-  const meta = loadMeta();
-  const profile = meta.profiles.find((p) => p.id === profileId);
-  if (!profile) { showProfileListScreen(); return; }
-
-  profileListScreenEl.hidden = true;
-  profileCreateScreenEl.hidden = true;
-  profileUnlockScreenEl.hidden = false;
-  profileUnlockScreenEl.dataset.profileId = profileId;
-  unlockDotEl.style.setProperty("--accent-color", accentFor(profile.id));
-  unlockProfileNameEl.textContent = profile.name;
-  profileUnlockPinEl.value = "";
-  clearError(profileUnlockErrorEl);
-  requestAnimationFrame(() => profileUnlockPinEl.focus());
-}
-
-function renderProfileList() {
-  const meta = loadMeta();
-  profileListEl.innerHTML = "";
-  profileEmptyEl.hidden = meta.profiles.length > 0;
-
-  for (const profile of meta.profiles) {
-    const node = profileTemplateEl.content.cloneNode(true);
-    const btn = node.querySelector(".profile-select-btn");
-    const dot = node.querySelector(".counter-dot");
-    const nameEl = node.querySelector(".profile-item-name");
-    const lockEl = node.querySelector(".profile-lock-indicator");
-
-    dot.style.setProperty("--accent-color", accentFor(profile.id));
-    nameEl.textContent = profile.name;
-    btn.dataset.profileId = profile.id;
-
-    if (profile.pinHash) {
-      lockEl.hidden = false;
-      btn.setAttribute("aria-label", `${profile.name} — PIN protected`);
-    } else {
-      lockEl.hidden = true;
-    }
-
-    profileListEl.appendChild(node);
-  }
-}
-
-// --- Routing / main render ---
+// ─── Routing / render ──────────────────────────────────────────────────────────
 
 function currentRoute() {
-  const match = location.hash.match(/^#\/counter\/(.+)$/);
-  if (match) return { view: "detail", id: decodeURIComponent(match[1]) };
+  if (location.hash === "#/dashboard") return { view: "dashboard" };
+  const joinMatch = location.hash.match(/^#\/join\/([A-Z0-9]{6})$/i);
+  if (joinMatch) return { view: "join", code: joinMatch[1].toUpperCase() };
+  const sharedMatch = location.hash.match(/^#\/shared\/([^/]+)\/([^/]+)\/(.+)$/);
+  if (sharedMatch) return {
+    view: "shared",
+    profileId: decodeURIComponent(sharedMatch[1]),
+    counterId: decodeURIComponent(sharedMatch[2]),
+    name: decodeURIComponent(sharedMatch[3]),
+  };
+  const detailMatch = location.hash.match(/^#\/counter\/(.+)$/);
+  if (detailMatch) return { view: "detail", id: decodeURIComponent(detailMatch[1]) };
   return { view: "home" };
 }
 
-// moveFocus should be true only on deliberate user-driven navigations (hash
-// change), not on initial page load or cross-tab storage syncs.
-function renderApp({ moveFocus = false } = {}) {
-  if (!activeProfileId) {
+// renderApp may fetch data asynchronously (lazy history load for detail/dashboard).
+// The callers that don't await it are fine: the async work finishes and the render
+// happens naturally; nothing in the call chain depends on the resolved value.
+async function renderApp({ moveFocus = false } = {}) {
+  const route = currentRoute();
+
+  // Dashboard requires auth.
+  if (route.view === "dashboard") {
+    if (!currentUser) { location.hash = ""; return; }
+    authViewEl.hidden = true;
     homeViewEl.hidden = true;
     detailViewEl.hidden = true;
-    profileViewEl.hidden = false;
-    showProfileListScreen();
+    sharedViewEl.hidden = true;
+    dashboardViewEl.hidden = false;
+
+    // Lazy-load history for all counters.
+    if (counters.some((c) => !c.history)) {
+      const res = await fetch("/api/counters?include=history");
+      if (res.ok) {
+        const { counters: full } = await res.json();
+        for (const fc of full) {
+          const c = counters.find((x) => x.id === fc.id);
+          if (c) c.history = fc.history || [];
+        }
+      }
+    }
+
+    renderDashboard(counters, dashboardDays);
     return;
   }
 
-  profileViewEl.hidden = true;
-
-  // Keep the profile label in the home-view header current.
-  if (activeProfileLabelEl) {
-    const meta = loadMeta();
-    const profile = meta.profiles.find((p) => p.id === activeProfileId);
-    activeProfileLabelEl.textContent = profile ? profile.name : "";
+  // Join via share code — resolve then redirect to shared view.
+  if (route.view === "join") {
+    sharedViewEl.hidden = false;
+    authViewEl.hidden = true;
+    homeViewEl.hidden = true;
+    detailViewEl.hidden = true;
+    dashboardViewEl.hidden = true;
+    sharedNameEl.textContent = "Loading…";
+    sharedCountEl.textContent = "–";
+    try {
+      const res = await fetch(`/api/share/${encodeURIComponent(route.code)}`);
+      if (!res.ok) throw new Error("not found");
+      const { counter } = await res.json();
+      history.replaceState(null, "",
+        `#/shared/${encodeURIComponent(counter.ownerId)}` +
+        `/${encodeURIComponent(counter.id)}` +
+        `/${encodeURIComponent(counter.name)}`
+      );
+      await enterSharedView(counter.ownerId, counter.id, counter.name);
+    } catch {
+      announce("Counter not found. The link may be invalid.");
+      history.replaceState(null, "", location.pathname);
+      renderApp();
+    }
+    return;
   }
 
-  const route = currentRoute();
+  // Shared view: no auth needed.
+  if (route.view === "shared") {
+    if (!sharedSession || sharedSession.counterId !== route.counterId) {
+      enterSharedView(route.profileId, route.counterId, route.name);
+    } else {
+      showSharedView();
+    }
+    return;
+  }
+
+  // Leaving shared view.
+  if (sharedSession) {
+    exitSharedView();
+    if (currentUser) { syncConnect(); startSyncTimer(); }
+  }
+
+  // Not logged in: show auth screen.
+  if (!currentUser) {
+    homeViewEl.hidden = true;
+    detailViewEl.hidden = true;
+    sharedViewEl.hidden = true;
+    dashboardViewEl.hidden = true;
+    authViewEl.hidden = false;
+    showAuthLoginScreen();
+    return;
+  }
+
+  authViewEl.hidden = true;
+  sharedViewEl.hidden = true;
+  dashboardViewEl.hidden = true;
+
+  if (activeProfileLabelEl) activeProfileLabelEl.textContent = currentUser.email;
+  if (premiumBadgeEl) premiumBadgeEl.hidden = !currentUser.isPremium;
 
   if (route.view === "detail" && counters.some((c) => c.id === route.id)) {
+    // Leave any previously joined counter room before joining a new one.
+    if (lastDetailId && lastDetailId !== route.id) wsLeaveCounter(lastDetailId);
     lastDetailId = route.id;
     homeViewEl.hidden = true;
     detailViewEl.hidden = false;
+
+    const counter = counters.find((c) => c.id === route.id);
+    // Lazy-load history on first visit to detail view.
+    if (!counter.history) {
+      const res = await fetch(`/api/counters/${route.id}`);
+      if (res.ok) {
+        const { counter: detail } = await res.json();
+        counter.history = detail.history || [];
+        counter.count = detail.count;
+      } else {
+        counter.history = [];
+      }
+    }
+
     renderDetail(route.id);
+    wsJoinCounter(route.id);
     if (moveFocus) detailNameEl.focus();
   } else {
+    if (lastDetailId) wsLeaveCounter(lastDetailId);
     detailViewEl.hidden = true;
     homeViewEl.hidden = false;
     renderHome();
     if (moveFocus && lastDetailId) {
-      // Return focus to the counter's list item link, or fall back to the first
-      // counter or the new-counter input if the counter was just deleted.
       const li = listEl.querySelector(`.counter[data-id="${lastDetailId}"]`);
       const target =
         li?.querySelector(".counter-name") ||
@@ -300,14 +331,34 @@ function renderApp({ moveFocus = false } = {}) {
   }
 }
 
-// --- Home view ---
+// ─── Auth view ─────────────────────────────────────────────────────────────────
+
+function showAuthLoginScreen() {
+  authLoginScreenEl.hidden = false;
+  authSignupScreenEl.hidden = true;
+  clearError(loginErrorEl);
+  requestAnimationFrame(() => loginEmailEl.focus());
+}
+
+function showAuthSignupScreen() {
+  authLoginScreenEl.hidden = true;
+  authSignupScreenEl.hidden = false;
+  clearError(signupErrorEl);
+  requestAnimationFrame(() => signupEmailEl.focus());
+}
+
+// ─── Home view ─────────────────────────────────────────────────────────────────
 
 function renderHome() {
   listEl.innerHTML = "";
   emptyStateEl.hidden = counters.length > 0;
   summaryEl.hidden = counters.length === 0;
-  summaryEl.textContent =
-    counters.length === 1 ? "1 counter" : `${counters.length} counters`;
+
+  if (currentUser?.isPremium) {
+    summaryEl.textContent = `${counters.length} counter${counters.length !== 1 ? "s" : ""}`;
+  } else {
+    summaryEl.textContent = `${counters.length} / ${FREE_COUNTER_LIMIT} counters (free plan)`;
+  }
 
   for (const counter of counters) {
     const node = templateEl.content.cloneNode(true);
@@ -329,106 +380,121 @@ async function addCounter(name) {
   name = name.trim();
   if (!name) return { ok: false, reason: "empty" };
 
-  let outcome;
+  // Client-side limit check so the upgrade modal shows immediately.
+  if (!currentUser?.isPremium && counters.length >= FREE_COUNTER_LIMIT) {
+    showUpgradeModal();
+    return { ok: false, reason: "limit" };
+  }
+
   try {
-    outcome = await mutateCounters(() => {
-      const lower = name.toLowerCase();
-      if (counters.some((c) => c.name.toLowerCase() === lower)) {
-        return { ok: false, reason: "duplicate" };
-      }
-      counters.push({ id: crypto.randomUUID(), name, count: 0, history: [] });
-      return { ok: true };
+    const res = await fetch("/api/counters", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ name }),
     });
+    const data = await res.json();
+    if (!res.ok) {
+      if (res.status === 403) { showUpgradeModal(); return { ok: false, reason: "limit" }; }
+      return { ok: false, reason: "error", message: data.error };
+    }
+    counters.push({ id: data.id, name: data.name, count: 0 });
+    announce(`Counter "${data.name}" added.`);
+    renderHome();
+    const newLi = listEl.lastElementChild;
+    if (newLi) {
+      newLi.classList.add("counter-enter");
+      newLi.addEventListener("animationend", () => newLi.classList.remove("counter-enter"), { once: true });
+    }
+    return { ok: true };
   } catch {
     return { ok: false, reason: "error" };
   }
-
-  if (!outcome.ok) return outcome;
-
-  announce(`Counter "${name}" added.`);
-  renderHome();
-  const newLi = listEl.lastElementChild;
-  if (newLi) {
-    newLi.classList.add("counter-enter");
-    newLi.addEventListener("animationend", () => newLi.classList.remove("counter-enter"), { once: true });
-  }
-  return { ok: true };
 }
 
 async function removeCounter(id) {
   const target = counters.find((c) => c.id === id);
-  try {
-    await mutateCounters(() => {
-      counters = counters.filter((c) => c.id !== id);
-    });
-  } catch {
-    return;
-  }
+  try { await fetch(`/api/counters/${id}`, { method: "DELETE" }); } catch {}
+  counters = counters.filter((c) => c.id !== id);
   if (target) announce(`Counter "${target.name}" deleted.`);
   renderHome();
 }
 
-// --- Shared count logic ---
+// ─── Upgrade modal ─────────────────────────────────────────────────────────────
+
+function showUpgradeModal() {
+  upgradeConfirmBtnEl.disabled = false;
+  upgradeConfirmBtnEl.textContent = "Upgrade — $5/mo";
+  upgradeModalEl.showModal();
+  upgradeCancelBtnEl.focus();
+}
+
+upgradeCancelBtnEl.addEventListener("click", () => upgradeModalEl.close("cancel"));
+
+upgradeConfirmBtnEl.addEventListener("click", async () => {
+  upgradeConfirmBtnEl.disabled = true;
+  upgradeConfirmBtnEl.textContent = "Loading…";
+  try {
+    const res = await fetch("/api/stripe/checkout", { method: "POST" });
+    const data = await res.json();
+    if (data.url) {
+      window.location.href = data.url;
+    } else {
+      upgradeConfirmBtnEl.disabled = false;
+      upgradeConfirmBtnEl.textContent = "Upgrade — $5/mo";
+      alert(data.error || "Couldn't start checkout — please try again.");
+    }
+  } catch {
+    upgradeConfirmBtnEl.disabled = false;
+    upgradeConfirmBtnEl.textContent = "Upgrade — $5/mo";
+  }
+});
+
+// ─── Count logic ───────────────────────────────────────────────────────────────
 
 async function changeCount(id, delta) {
-  let counter;
-  try {
-    counter = await mutateCounters(() => {
-      const c = counters.find((item) => item.id === id);
-      if (!c) return null;
-      const at = Date.now();
-      const tz = Intl.DateTimeFormat().resolvedOptions().timeZone || undefined;
-      c.count += delta;
-      c.history.push({ delta, at, tz });
-      if (c.history.length > HISTORY_STORE_LIMIT) {
-        c.history.splice(0, c.history.length - HISTORY_STORE_LIMIT);
-      }
-      return c;
-    });
-  } catch {
-    return;
-  }
-  if (!counter) return;
+  const c = counters.find((item) => item.id === id);
+  if (!c) return;
 
-  // Add to the outgoing queue; the background timer will batch-flush it.
-  const tapEntry = counter.history[counter.history.length - 1];
-  enqueueTap(id, counter.name, delta, tapEntry.at, tapEntry.tz);
+  const at = Date.now();
+  const tz = Intl.DateTimeFormat().resolvedOptions().timeZone || undefined;
+
+  // Optimistic local update.
+  c.count += delta;
+  if (c.history) {
+    c.history.push({ delta, at, tz });
+    if (c.history.length > HISTORY_STORE_LIMIT) {
+      c.history.splice(0, c.history.length - HISTORY_STORE_LIMIT);
+    }
+  }
+
+  enqueueTap(id, c.name, delta, at, tz);
 
   const route = currentRoute();
   if (route.view === "detail" && route.id === id) {
-    updateDetailCount(counter);
-    prependHistoryEntry(
-      counter.history[counter.history.length - 1],
-      counter.history.length
-    );
+    updateDetailCount(c);
+    if (c.history) prependHistoryEntry(c.history[c.history.length - 1], c.history.length);
   } else {
     const li = listEl.querySelector(`.counter[data-id="${id}"]`);
     const countEl = li?.querySelector(".counter-count");
-    if (countEl) {
-      countEl.textContent = counter.count;
-      pulseElement(countEl);
-    }
+    if (countEl) { countEl.textContent = c.count; pulseElement(countEl); }
   }
 }
 
 function pulseElement(el) {
   el.classList.remove("pulse");
-  // Force reflow so the animation restarts on rapid clicks.
-  void el.offsetWidth;
+  void el.offsetWidth; // force reflow so animation restarts on rapid taps
   el.classList.add("pulse");
 }
 
-// --- Detail view ---
+// ─── Detail view ───────────────────────────────────────────────────────────────
 
 function renderDetail(id) {
   const counter = counters.find((c) => c.id === id);
   if (!counter) return;
-
   detailDotEl.style.setProperty("--accent-color", accentFor(counter.id));
   detailNameEl.textContent = counter.name;
   detailCountEl.textContent = counter.count;
   renderHistory(counter);
-
   deleteBtnEl.hidden = false;
 }
 
@@ -440,15 +506,12 @@ function updateDetailCount(counter) {
 function buildHistoryEntry(entry) {
   const li = document.createElement("li");
   li.className = "history-entry";
-
   const deltaEl = document.createElement("span");
   deltaEl.className = `history-delta ${entry.delta > 0 ? "positive" : "negative"}`;
-  deltaEl.textContent = entry.delta > 0 ? `+${entry.delta}` : `${entry.delta}`;
-
+  deltaEl.textContent = entry.delta > 0 ? `+${entry.delta}` : String(entry.delta);
   const timeEl = document.createElement("span");
   timeEl.className = "history-time";
   timeEl.textContent = formatTime(entry.at, entry.tz);
-
   li.appendChild(deltaEl);
   li.appendChild(timeEl);
   return li;
@@ -456,18 +519,14 @@ function buildHistoryEntry(entry) {
 
 function renderHistory(counter) {
   historyListEl.innerHTML = "";
-  historyEmptyEl.hidden = counter.history.length > 0;
-
-  const total = counter.history.length;
-  // Render newest-first, capped to avoid creating thousands of DOM nodes.
-  const slice = counter.history.slice(-HISTORY_DISPLAY_LIMIT);
+  const history = counter.history || [];
+  historyEmptyEl.hidden = history.length > 0;
+  const total = history.length;
+  const slice = history.slice(-HISTORY_DISPLAY_LIMIT);
   for (let i = slice.length - 1; i >= 0; i--) {
     historyListEl.appendChild(buildHistoryEntry(slice[i]));
   }
-
-  if (total > HISTORY_DISPLAY_LIMIT) {
-    historyListEl.appendChild(buildTruncationNote(total));
-  }
+  if (total > HISTORY_DISPLAY_LIMIT) historyListEl.appendChild(buildTruncationNote(total));
 }
 
 function buildTruncationNote(total) {
@@ -477,18 +536,11 @@ function buildTruncationNote(total) {
   return li;
 }
 
-// O(1) update: prepend one row instead of rebuilding the entire list.
 function prependHistoryEntry(entry, totalStored) {
   historyEmptyEl.hidden = true;
   historyListEl.insertBefore(buildHistoryEntry(entry), historyListEl.firstChild);
-
-  // Drop the oldest visible entry once we exceed the display limit.
   const entries = historyListEl.querySelectorAll(".history-entry");
-  if (entries.length > HISTORY_DISPLAY_LIMIT) {
-    entries[entries.length - 1].remove();
-  }
-
-  // Keep the truncation note accurate.
+  if (entries.length > HISTORY_DISPLAY_LIMIT) entries[entries.length - 1].remove();
   let note = historyListEl.querySelector(".history-truncated-note");
   if (totalStored > HISTORY_DISPLAY_LIMIT) {
     if (!note) {
@@ -500,111 +552,101 @@ function prependHistoryEntry(entry, totalStored) {
   }
 }
 
-// --- Event wiring: profile view ---
+// ─── Utilities ─────────────────────────────────────────────────────────────────
 
-profileListEl.addEventListener("click", (e) => {
-  const btn = e.target.closest(".profile-select-btn");
-  if (!btn) return;
-  const profileId = btn.dataset.profileId;
-  const meta = loadMeta();
-  const profile = meta.profiles.find((p) => p.id === profileId);
-  if (!profile) return;
+const nameErrorEl = document.getElementById("name-error");
+const srAnnounceEl = document.getElementById("sr-announce");
 
-  if (profile.pinHash) {
-    showUnlockScreen(profileId);
-  } else {
-    activateProfile(profileId);
-    renderApp();
+function announce(msg) {
+  if (!srAnnounceEl) return;
+  srAnnounceEl.textContent = "";
+  requestAnimationFrame(() => { srAnnounceEl.textContent = msg; });
+}
+
+function showError(el, msg) { el.textContent = msg; el.hidden = false; }
+function clearError(el) { el.hidden = true; el.textContent = ""; }
+
+// ─── Event wiring: auth ────────────────────────────────────────────────────────
+
+showSignupLinkEl.addEventListener("click", (e) => { e.preventDefault(); showAuthSignupScreen(); });
+showLoginLinkEl.addEventListener("click", (e) => { e.preventDefault(); showAuthLoginScreen(); });
+
+loginEmailEl.addEventListener("input", () => clearError(loginErrorEl));
+loginPasswordEl.addEventListener("input", () => clearError(loginErrorEl));
+
+loginFormEl.addEventListener("submit", async (e) => {
+  e.preventDefault();
+  const email = loginEmailEl.value.trim();
+  const password = loginPasswordEl.value;
+  if (!email || !password) return;
+  loginSubmitBtnEl.disabled = true;
+  loginSubmitBtnEl.textContent = "Logging in…";
+  const result = await handleLogin(email, password);
+  loginSubmitBtnEl.disabled = false;
+  loginSubmitBtnEl.textContent = "Log in";
+  if (!result.ok) { showError(loginErrorEl, result.error || "Login failed"); return; }
+  location.hash = "";
+  renderApp();
+});
+
+signupEmailEl.addEventListener("input", () => clearError(signupErrorEl));
+signupPasswordEl.addEventListener("input", () => clearError(signupErrorEl));
+
+signupFormEl.addEventListener("submit", async (e) => {
+  e.preventDefault();
+  const email = signupEmailEl.value.trim();
+  const password = signupPasswordEl.value;
+  if (password.length < 8) {
+    showError(signupErrorEl, "Password must be at least 8 characters.");
+    signupPasswordEl.focus();
+    return;
   }
+  signupSubmitBtnEl.disabled = true;
+  signupSubmitBtnEl.textContent = "Creating account…";
+  const result = await handleSignup(email, password);
+  signupSubmitBtnEl.disabled = false;
+  signupSubmitBtnEl.textContent = "Create account";
+  if (!result.ok) { showError(signupErrorEl, result.error || "Signup failed"); return; }
+  location.hash = "";
+  renderApp();
 });
 
-newProfileBtnEl.addEventListener("click", () => showProfileCreateScreen());
+// ─── Event wiring: home ────────────────────────────────────────────────────────
 
-createCancelLinkEl.addEventListener("click", (e) => {
-  e.preventDefault();
-  showProfileListScreen();
-});
+if (logoutBtnEl) logoutBtnEl.addEventListener("click", handleLogout);
 
-profileCreateFormEl.addEventListener("submit", async (e) => {
+nameInputEl.addEventListener("input", () => clearError(nameErrorEl));
+
+formEl.addEventListener("submit", async (e) => {
   e.preventDefault();
-  const name = profileNameInputEl.value.trim();
+  const name = nameInputEl.value.trim();
   if (!name) return;
-
-  const meta = loadMeta();
-  if (meta.profiles.some((p) => p.name.toLowerCase() === name.toLowerCase())) {
-    showError(profileCreateErrorEl, "A profile with that name already exists.");
-    profileNameInputEl.select();
+  const result = await addCounter(name);
+  if (!result.ok) {
+    if (result.reason !== "limit") {
+      showError(nameErrorEl, result.message || "Couldn't save — please try again.");
+    }
     return;
   }
-
-  const pin = profilePinInputEl.value;
-  if (pin && !/^\d{4}$/.test(pin)) {
-    showError(profileCreateErrorEl, "PIN must be exactly 4 digits (0–9).");
-    profilePinInputEl.select();
-    return;
-  }
-
-  clearError(profileCreateErrorEl);
-
-  const profileId = crypto.randomUUID();
-  const pinHash = pin ? await hashPIN(pin, profileId) : null;
-
-  try {
-    await mutateMeta((meta) => {
-      meta.profiles.push({ id: profileId, name, pinHash });
-    });
-  } catch {
-    showError(profileCreateErrorEl, "Couldn't save — storage may be full or unavailable.");
-    return;
-  }
-
-  activateProfile(profileId);
-  renderApp();
+  clearError(nameErrorEl);
+  nameInputEl.value = "";
+  nameInputEl.focus();
 });
 
-profileNameInputEl.addEventListener("input", () => clearError(profileCreateErrorEl));
-profilePinInputEl.addEventListener("input", () => clearError(profileCreateErrorEl));
-
-unlockCancelLinkEl.addEventListener("click", (e) => {
-  e.preventDefault();
-  showProfileListScreen();
-});
-
-profileUnlockFormEl.addEventListener("submit", async (e) => {
-  e.preventDefault();
-  const profileId = profileUnlockScreenEl.dataset.profileId;
-  const pin = profileUnlockPinEl.value;
-
-  const meta = loadMeta();
-  const profile = meta.profiles.find((p) => p.id === profileId);
-  if (!profile) { showProfileListScreen(); return; }
-
-  const entered = await hashPIN(pin, profileId);
-  if (entered !== profile.pinHash) {
-    showError(profileUnlockErrorEl, "Incorrect PIN. Try again.");
-    profileUnlockPinEl.value = "";
-    profileUnlockPinEl.focus();
-    return;
-  }
-
-  clearError(profileUnlockErrorEl);
-  activateProfile(profileId);
-  renderApp();
-});
-
-profileUnlockPinEl.addEventListener("input", () => {
-  clearError(profileUnlockErrorEl);
-  // Auto-submit as soon as 4 digits are entered so the user doesn't have to
-  // press Unlock or hit Enter.
-  if (profileUnlockPinEl.value.length === 4) {
-    profileUnlockFormEl.requestSubmit();
+listEl.addEventListener("click", async (e) => {
+  const li = e.target.closest(".counter");
+  if (!li) return;
+  const id = li.dataset.id;
+  if (e.target.closest(".increment")) await changeCount(id, 1);
+  else if (e.target.closest(".decrement")) await changeCount(id, -1);
+  else if (e.target.closest(".remove")) {
+    const name = counters.find((c) => c.id === id)?.name ?? "this counter";
+    if (await openDeleteModal(name)) await removeCounter(id);
   }
 });
 
-// --- Delete confirmation modal ---
+// ─── Delete modal ──────────────────────────────────────────────────────────────
 
-// Returns a Promise that resolves to true (confirmed) or false (cancelled).
-// Uses the native <dialog> element so focus is trapped and Escape cancels.
 let _deleteModalResolve = null;
 
 deleteModalEl.addEventListener("close", () => {
@@ -626,76 +668,7 @@ function openDeleteModal(counterName) {
   });
 }
 
-// --- Event wiring: lock ---
-
-if (lockBtnEl) lockBtnEl.addEventListener("click", handleLock);
-if (detailLockBtnEl) detailLockBtnEl.addEventListener("click", handleLock);
-
-// --- Event wiring: home view ---
-
-const nameErrorEl = document.getElementById("name-error");
-const srAnnounceEl = document.getElementById("sr-announce");
-
-function announce(msg) {
-  if (!srAnnounceEl) return;
-  // Clear first so identical consecutive messages still fire for screen readers.
-  srAnnounceEl.textContent = "";
-  requestAnimationFrame(() => { srAnnounceEl.textContent = msg; });
-}
-
-// Generic helpers for inline field-level error messages.
-// Pass the specific error <p> element and the message string.
-// Every error site in the app uses these two functions so the pattern
-// stays consistent as new features are added.
-function showError(el, msg) {
-  el.textContent = msg;
-  el.hidden = false;
-}
-
-function clearError(el) {
-  el.hidden = true;
-  el.textContent = "";
-}
-
-nameInputEl.addEventListener("input", () => clearError(nameErrorEl));
-
-formEl.addEventListener("submit", async (e) => {
-  e.preventDefault();
-  const name = nameInputEl.value.trim();
-  if (!name) return;
-  const result = await addCounter(name);
-  if (!result.ok) {
-    if (result.reason === "duplicate") {
-      showError(nameErrorEl, "A counter with that name already exists.");
-      nameInputEl.select();
-    } else {
-      // Storage quota exceeded, unavailable, or other write failure.
-      // The storage-warning banner is also shown by mutateCounters, but an
-      // inline message here tells the user exactly which action failed.
-      showError(nameErrorEl, "Couldn't save — storage may be full or unavailable.");
-    }
-    return;
-  }
-  clearError(nameErrorEl);
-  nameInputEl.value = "";
-  nameInputEl.focus();
-});
-
-listEl.addEventListener("click", async (e) => {
-  const li = e.target.closest(".counter");
-  if (!li) return;
-  const id = li.dataset.id;
-
-  if (e.target.closest(".increment")) await changeCount(id, 1);
-  else if (e.target.closest(".decrement")) await changeCount(id, -1);
-  else if (e.target.closest(".remove")) {
-    const name = counters.find((c) => c.id === id)?.name ?? "this counter";
-    if (await openDeleteModal(name)) await removeCounter(id);
-  }
-  // .counter-name is a plain <a href="#/counter/..."> — let it navigate natively.
-});
-
-// --- Event wiring: detail view ---
+// ─── Event wiring: detail view ─────────────────────────────────────────────────
 
 detailIncrementEl.addEventListener("click", async () => {
   const { id } = currentRoute();
@@ -707,10 +680,7 @@ detailDecrementEl.addEventListener("click", async () => {
   if (id) await changeCount(id, -1);
 });
 
-backLinkEl.addEventListener("click", (e) => {
-  e.preventDefault();
-  location.hash = "";
-});
+backLinkEl.addEventListener("click", (e) => { e.preventDefault(); location.hash = ""; });
 
 deleteBtnEl.addEventListener("click", async () => {
   const { id } = currentRoute();
@@ -721,23 +691,101 @@ deleteBtnEl.addEventListener("click", async () => {
   }
 });
 
+// ─── Event wiring: share button / share modal ──────────────────────────────────
 
-// --- Server sync (real-time cross-device) ---
-//
-// Taps are accumulated in `tapQueue` and flushed to /api/taps on a fixed
-// interval.  The server applies the whole batch atomically and broadcasts each
-// tap via WebSocket so other connected devices update immediately.
-//
-// On flaky connections the flush simply fails and the queue is kept intact;
-// the next scheduled flush will retry the same taps.  The queue is also
-// drained eagerly when the tab goes hidden and on page unload (via sendBeacon)
-// so background-tab and close scenarios don't silently drop taps.
-//
-// Echo suppression: we record each enqueued tap's (counterId, at) key and
-// ignore WS messages that match — they are echoes of our own taps that have
-// already been applied locally.
-//
-// WebSocket reconnection: a closed connection is retried after 3 s.
+shareBtnEl.addEventListener("click", async () => {
+  const { id } = currentRoute();
+  if (!id || !currentUser) return;
+  shareBtnEl.disabled = true;
+  shareBtnEl.textContent = "Loading…";
+  try {
+    const res = await fetch(`/api/counters/${id}/share`, { method: "POST" });
+    const data = await res.json();
+    if (!res.ok) throw new Error(data.error || "error");
+    const shareUrl = `${location.origin}${location.pathname}#/join/${data.code}`;
+    shareCodeTextEl.textContent = data.code;
+    shareUrlInputEl.value = shareUrl;
+    shareModalEl.showModal();
+    shareModalCloseBtnEl.focus();
+  } catch {
+    announce("Couldn't generate share link — please try again.");
+  } finally {
+    shareBtnEl.disabled = false;
+    shareBtnEl.textContent = "Share";
+  }
+});
+
+shareModalCloseBtnEl.addEventListener("click", () => shareModalEl.close());
+
+shareModalCopyBtnEl.addEventListener("click", async () => {
+  const url = shareUrlInputEl.value;
+  try {
+    await navigator.clipboard.writeText(url);
+    shareModalCopyBtnEl.textContent = "Copied!";
+    setTimeout(() => { shareModalCopyBtnEl.textContent = "Copy"; }, 2000);
+  } catch {
+    shareUrlInputEl.select();
+  }
+});
+
+// ─── Event wiring: join modal ──────────────────────────────────────────────────
+
+if (joinBtnEl) joinBtnEl.addEventListener("click", () => {
+  clearError(joinErrorEl);
+  joinCodeInputEl.value = "";
+  joinModalEl.showModal();
+  joinCodeInputEl.focus();
+});
+
+joinModalCancelBtnEl.addEventListener("click", () => joinModalEl.close());
+
+joinCodeInputEl.addEventListener("input", () => {
+  clearError(joinErrorEl);
+  joinCodeInputEl.value = joinCodeInputEl.value.toUpperCase();
+});
+
+joinModalSubmitBtnEl.addEventListener("click", async () => {
+  const code = joinCodeInputEl.value.trim().toUpperCase();
+  if (code.length !== 6) {
+    showError(joinErrorEl, "Enter the full 6-character code.");
+    return;
+  }
+  joinModalSubmitBtnEl.disabled = true;
+  joinModalSubmitBtnEl.textContent = "Joining…";
+  try {
+    const res = await fetch(`/api/share/${encodeURIComponent(code)}`);
+    if (!res.ok) throw new Error("not found");
+    const { counter } = await res.json();
+    joinModalEl.close();
+    location.hash = `#/join/${code}`;
+  } catch {
+    showError(joinErrorEl, "Counter not found. Check the code and try again.");
+  } finally {
+    joinModalSubmitBtnEl.disabled = false;
+    joinModalSubmitBtnEl.textContent = "Join";
+  }
+});
+
+// ─── Event wiring: shared view ─────────────────────────────────────────────────
+
+sharedIncrementEl.addEventListener("click", () => sharedTap(1));
+sharedDecrementEl.addEventListener("click", () => sharedTap(-1));
+sharedBackLinkEl.addEventListener("click", (e) => { e.preventDefault(); location.hash = ""; });
+
+// ─── Event wiring: dashboard ───────────────────────────────────────────────────
+
+dashboardBackLinkEl.addEventListener("click", (e) => { e.preventDefault(); location.hash = ""; });
+
+dashboardViewEl.addEventListener("click", (e) => {
+  const btn = e.target.closest(".range-btn");
+  if (!btn) return;
+  dashboardDays = Number(btn.dataset.days);
+  renderDashboard(counters, dashboardDays);
+});
+
+exportCsvBtnEl.addEventListener("click", () => exportCSV(counters));
+
+// ─── WebSocket sync ────────────────────────────────────────────────────────────
 
 const SYNC_INTERVAL_MS = 3000;
 
@@ -745,32 +793,66 @@ let syncWs = null;
 let syncReconnectTimer = null;
 let syncIntervalTimer = null;
 
-const tapQueue = []; // { profileId, counterId, name, delta, at }
-const sentTapKeys = new Set(); // (counterId:at) keys to suppress WS echoes
+// Counter presence room tracking.
+let _pendingJoinCounterId = null;
+let _joinedCounterId = null;
+
+function wsJoinCounter(counterId) {
+  _pendingJoinCounterId = counterId;
+  _joinedCounterId = counterId;
+  if (syncWs?.readyState === 1) {
+    syncWs.send(JSON.stringify({ type: "join-counter", counterId }));
+    _pendingJoinCounterId = null;
+  }
+}
+
+function wsLeaveCounter(counterId) {
+  if (_joinedCounterId === counterId) _joinedCounterId = null;
+  _pendingJoinCounterId = null;
+  if (syncWs?.readyState === 1) {
+    syncWs.send(JSON.stringify({ type: "leave-counter", counterId }));
+  }
+  // Clear presence display.
+  if (detailPresenceEl) { detailPresenceEl.textContent = ""; detailPresenceEl.hidden = true; detailPresenceEl.classList.remove("active"); }
+  if (sharedPresenceEl) { sharedPresenceEl.textContent = ""; sharedPresenceEl.hidden = true; sharedPresenceEl.classList.remove("active"); }
+}
+
+const tapQueue = [];
+const sentTapKeys = new Set();
 
 function syncConnect() {
-  if (!activeProfileId || syncWs) return;
+  const pid = effectiveProfileId();
+  if (!pid || syncWs) return;
   const wsUrl = location.origin.replace(/^http/, "ws") + "/ws";
   const ws = new WebSocket(wsUrl);
   syncWs = ws;
 
   ws.addEventListener("open", () => {
-    ws.send(JSON.stringify({ type: "subscribe", profileId: activeProfileId }));
+    ws.send(JSON.stringify({ type: "subscribe", profileId: pid }));
+    if (_pendingJoinCounterId) {
+      ws.send(JSON.stringify({ type: "join-counter", counterId: _pendingJoinCounterId }));
+      _pendingJoinCounterId = null;
+    }
   });
 
   ws.addEventListener("message", (e) => {
     try {
       const msg = JSON.parse(e.data);
-      if (msg.type === "tap") applySyncedTap(msg);
-      else if (msg.type === "state") applySyncedState(msg.counters);
+      if (msg.type === "tap") {
+        if (sharedSession) applySharedTap(msg);
+        else applySyncedTap(msg);
+      } else if (msg.type === "state") {
+        if (sharedSession) applySharedState(msg.counters);
+        else applySyncedState(msg.counters);
+      } else if (msg.type === "presence") {
+        applyPresence(msg);
+      }
     } catch {}
   });
 
   ws.addEventListener("close", () => {
-    syncWs = null;
-    if (activeProfileId) {
-      syncReconnectTimer = setTimeout(syncConnect, 3000);
-    }
+    if (syncWs === ws) syncWs = null;
+    if (effectiveProfileId()) syncReconnectTimer = setTimeout(syncConnect, 3000);
   });
 
   ws.addEventListener("error", () => ws.close());
@@ -780,10 +862,7 @@ function syncDisconnect() {
   clearTimeout(syncReconnectTimer);
   clearInterval(syncIntervalTimer);
   syncIntervalTimer = null;
-  if (syncWs) {
-    syncWs.close();
-    syncWs = null;
-  }
+  if (syncWs) { syncWs.close(); syncWs = null; }
 }
 
 function startSyncTimer() {
@@ -791,8 +870,6 @@ function startSyncTimer() {
   syncIntervalTimer = setInterval(flushTapQueue, SYNC_INTERVAL_MS);
 }
 
-// Enqueue one tap.  Called immediately on every local tap so the key is
-// recorded before any WS echo can arrive.
 function enqueueTap(counterId, counterName, delta, at, tz) {
   const key = `${counterId}:${at}`;
   sentTapKeys.add(key);
@@ -800,13 +877,11 @@ function enqueueTap(counterId, counterName, delta, at, tz) {
     const arr = [...sentTapKeys];
     arr.slice(0, 250).forEach((k) => sentTapKeys.delete(k));
   }
-  tapQueue.push({ profileId: activeProfileId, counterId, name: counterName, delta, at, tz });
+  tapQueue.push({ profileId: effectiveProfileId(), counterId, name: counterName, delta, at, tz });
 }
 
-// Drain the queue with a single POST.  On network failure the batch is put
-// back at the front so it is retried on the next interval — no taps are lost.
 async function flushTapQueue() {
-  if (!activeProfileId || tapQueue.length === 0) return;
+  if (!currentUser || tapQueue.length === 0) return;
   const batch = tapQueue.splice(0, tapQueue.length);
   try {
     const res = await fetch("/api/taps", {
@@ -816,132 +891,166 @@ async function flushTapQueue() {
     });
     if (!res.ok) throw new Error(`HTTP ${res.status}`);
   } catch {
-    tapQueue.unshift(...batch); // restore for next attempt
+    tapQueue.unshift(...batch);
   }
 }
 
-// Apply a single tap received from another device via WebSocket.
+// ─── Shared view ───────────────────────────────────────────────────────────────
+
+function showSharedView() {
+  authViewEl.hidden = true;
+  homeViewEl.hidden = true;
+  detailViewEl.hidden = true;
+  sharedViewEl.hidden = false;
+  sharedNameEl.textContent = sharedSession.name;
+  sharedCountEl.textContent = sharedSession.count;
+  sharedDotEl.style.setProperty("--accent-color", accentFor(sharedSession.counterId));
+  requestAnimationFrame(() => sharedNameEl.focus());
+}
+
+async function enterSharedView(profileId, counterId, name) {
+  syncDisconnect();
+  sharedSession = { profileId, counterId, name, count: 0 };
+  showSharedView();
+  syncConnect();
+  startSyncTimer();
+  wsJoinCounter(counterId);
+
+  try {
+    const res = await fetch(
+      `/api/counter/${encodeURIComponent(profileId)}/${encodeURIComponent(counterId)}`
+    );
+    if (res.ok) {
+      const { counter } = await res.json();
+      if (sharedSession && sharedSession.counterId === counterId) {
+        sharedSession.count = counter.count;
+        sharedCountEl.textContent = counter.count;
+      }
+    }
+  } catch {}
+}
+
+function exitSharedView() {
+  if (sharedSession) wsLeaveCounter(sharedSession.counterId);
+  flushTapQueue();
+  syncDisconnect();
+  sharedSession = null;
+}
+
+async function sharedTap(delta) {
+  if (!sharedSession) return;
+  const at = Date.now();
+  const tz = Intl.DateTimeFormat().resolvedOptions().timeZone || undefined;
+  sharedSession.count += delta;
+  sharedCountEl.textContent = sharedSession.count;
+  pulseElement(sharedCountEl);
+  enqueueTap(sharedSession.counterId, sharedSession.name, delta, at, tz);
+}
+
+function applySharedTap({ counterId, delta, at, count }) {
+  const key = `${counterId}:${at}`;
+  if (sentTapKeys.has(key)) { sentTapKeys.delete(key); return; }
+  if (!sharedSession || sharedSession.counterId !== counterId) return;
+  sharedSession.count = count;
+  sharedCountEl.textContent = count;
+  pulseElement(sharedCountEl);
+}
+
+function applyPresence({ counterId, viewers }) {
+  const teammates = viewers - 1; // subtract self
+  const text = teammates <= 0 ? "" : teammates === 1 ? "1 teammate here" : `${teammates} teammates here`;
+  const isActive = teammates > 0;
+
+  const route = currentRoute();
+  if (route.view === "detail" && route.id === counterId && detailPresenceEl) {
+    detailPresenceEl.textContent = text;
+    detailPresenceEl.hidden = !text;
+    detailPresenceEl.classList.toggle("active", isActive);
+  }
+  if (sharedSession?.counterId === counterId && sharedPresenceEl) {
+    sharedPresenceEl.textContent = text;
+    sharedPresenceEl.hidden = !text;
+    sharedPresenceEl.classList.toggle("active", isActive);
+  }
+}
+
+function applySharedState(serverCounters) {
+  if (!sharedSession || !Array.isArray(serverCounters)) return;
+  const sc = serverCounters.find((c) => c.id === sharedSession.counterId);
+  if (!sc) return;
+  sharedSession.count = sc.count;
+  sharedCountEl.textContent = sc.count;
+}
+
+// ─── Synced tap / state from another device ────────────────────────────────────
+
 function applySyncedTap({ counterId, delta, at, count, tz }) {
   const key = `${counterId}:${at}`;
-  if (sentTapKeys.has(key)) {
-    sentTapKeys.delete(key);
-    return; // echo of our own tap — already applied locally
-  }
+  if (sentTapKeys.has(key)) { sentTapKeys.delete(key); return; }
 
   const c = counters.find((item) => item.id === counterId);
   if (!c) return;
 
-  // Use the server's authoritative running total to prevent drift.
   c.count = count;
-  c.history.push({ delta, at, ...(tz ? { tz } : {}) });
-  if (c.history.length > HISTORY_STORE_LIMIT) {
-    c.history.splice(0, c.history.length - HISTORY_STORE_LIMIT);
+  if (c.history) {
+    c.history.push({ delta, at, ...(tz ? { tz } : {}) });
+    if (c.history.length > HISTORY_STORE_LIMIT) {
+      c.history.splice(0, c.history.length - HISTORY_STORE_LIMIT);
+    }
   }
 
-  // Persist so other tabs on this device also pick up the remote tap.
-  try {
-    saveCounters(activeProfileId, counters);
-  } catch {}
-
-  // Update the display.
   const route = currentRoute();
   if (route.view === "detail" && route.id === counterId) {
     updateDetailCount(c);
-    prependHistoryEntry(c.history[c.history.length - 1], c.history.length);
+    if (c.history) prependHistoryEntry(c.history[c.history.length - 1], c.history.length);
   } else {
     const li = listEl.querySelector(`.counter[data-id="${counterId}"]`);
     const countEl = li?.querySelector(".counter-count");
-    if (countEl) {
-      countEl.textContent = c.count;
-      pulseElement(countEl);
-    }
+    if (countEl) { countEl.textContent = c.count; pulseElement(countEl); }
   }
 }
 
-// Apply the full server state received on WS connect — updates any counters
-// whose count has drifted (e.g. due to taps made on another device while this
-// device was offline).
 function applySyncedState(serverCounters) {
   if (!Array.isArray(serverCounters) || serverCounters.length === 0) return;
   let changed = false;
   for (const sc of serverCounters) {
     const c = counters.find((item) => item.id === sc.id);
     if (!c) continue;
-    if (c.count !== sc.count) {
-      c.count = sc.count;
-      if (Array.isArray(sc.history) && sc.history.length > c.history.length) {
-        c.history = sc.history;
-      }
-      changed = true;
-    }
+    if (c.count !== sc.count) { c.count = sc.count; changed = true; }
   }
-  if (changed) {
-    try {
-      saveCounters(activeProfileId, counters);
-    } catch {}
-    renderApp();
-  }
+  if (changed) renderApp();
 }
 
-// Flush eagerly when the tab goes to the background (user switches apps or
-// tabs) so the queue doesn't wait out the full interval unnecessarily.
+// ─── Background flush ──────────────────────────────────────────────────────────
+
 document.addEventListener("visibilitychange", () => {
   if (document.visibilityState === "hidden") flushTapQueue();
 });
 
-// Use sendBeacon on page close — it survives the unload sequence unlike fetch.
-// Wrap the payload in a Blob so the browser sends Content-Type: application/json,
-// which express.json() can parse without special-casing.
 window.addEventListener("beforeunload", () => {
-  if (tapQueue.length > 0 && activeProfileId) {
-    const blob = new Blob([JSON.stringify({ taps: tapQueue })], {
-      type: "application/json",
-    });
+  if (tapQueue.length > 0 && effectiveProfileId()) {
+    const blob = new Blob([JSON.stringify({ taps: tapQueue })], { type: "application/json" });
     navigator.sendBeacon?.("/api/taps", blob);
   }
 });
 
-// --- Cross-tab sync ---
-
 window.addEventListener("hashchange", () => renderApp({ moveFocus: true }));
 
-// Another tab changed the data — pick up its write immediately instead of
-// showing a stale count until this tab does its own mutation or the page
-// is reloaded.
-window.addEventListener("storage", (e) => {
-  // Counter data changed in another tab for the currently active profile.
-  if (activeProfileId && e.key === storageKey(activeProfileId)) {
-    counters = loadCounters(activeProfileId);
-    renderApp();
-    return;
-  }
-  // Profile list changed in another tab (e.g. a new profile was created).
-  if (e.key === META_KEY && !activeProfileId) {
-    renderProfileList();
-  }
-});
-
-// --- Boot ---
-// Run the legacy migration first (wrapped in the meta lock so two tabs can't
-// both create a migration profile), then restore the tab session (if any)
-// before the first render.
+// ─── Boot ──────────────────────────────────────────────────────────────────────
 
 (async () => {
-  await withMetaLock(() => migrateIfNeeded());
+  await fetchCurrentUser();
 
-  const sessionId = getSession();
-  if (sessionId) {
-    const meta = loadMeta();
-    if (meta.profiles.some((p) => p.id === sessionId)) {
-      activateProfile(sessionId);
-    }
-  } else {
-    // Auto-login when there is exactly one PIN-free profile — the common case
-    // after a fresh install or after migrating a single-user setup.
-    const meta = loadMeta();
-    if (meta.profiles.length === 1 && !meta.profiles[0].pinHash) {
-      activateProfile(meta.profiles[0].id);
-    }
+  if (currentUser) {
+    await fetchCounters();
+    syncConnect();
+    startSyncTimer();
+  }
+
+  // Clean up Stripe checkout redirect param.
+  const params = new URLSearchParams(location.search);
+  if (params.get("checkout") === "success") {
+    history.replaceState({}, "", location.pathname + location.hash);
   }
 
   renderApp();

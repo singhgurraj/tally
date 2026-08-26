@@ -7,7 +7,12 @@
     "test": "node --test counters.test.js"
   },
   "dependencies": {
+    "bcryptjs": "^3.0.3",
+    "better-sqlite3": "^13.0.3",
+    "chart.js": "^4.5.1",
     "express": "^4.19.2",
+    "express-session": "^1.19.0",
+    "stripe": "^22.5.0",
     "ws": "^8.17.0"
   }
 }

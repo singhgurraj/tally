@@ -8,56 +8,43 @@
 </head>
 <body>
   <main>
-    <p id="storage-warning" role="alert" hidden>
-      ⚠ Changes aren't being saved — storage is unavailable or full (try clearing some data, or check whether private browsing is blocking storage).
-    </p>
+    <!-- Login / signup screens -->
+    <section id="auth-view" hidden>
 
-    <!-- Profile selection / creation / unlock screens -->
-    <section id="profile-view" hidden>
-
-      <div id="profile-list-screen">
-        <header>
-          <h1>Tally</h1>
-          <p class="profile-hint">Choose a profile to continue.</p>
-        </header>
-        <ul id="profile-list" role="list"></ul>
-        <p id="profile-empty" hidden>No profiles yet — create one below.</p>
-        <button type="button" id="new-profile-btn" class="new-profile-btn">New profile</button>
-      </div>
-
-      <div id="profile-create-screen" hidden>
-        <a href="#" id="create-cancel-link" class="back-link">&larr; All profiles</a>
-        <h2>New profile</h2>
-        <form id="profile-create-form" novalidate>
+      <div id="auth-login-screen">
+        <h1>Tally</h1>
+        <p class="auth-tagline">Count anything, together.</p>
+        <form id="login-form" novalidate>
           <div class="field">
-            <label for="profile-name-input">Name</label>
-            <input type="text" id="profile-name-input" maxlength="30" autocomplete="off" required>
+            <label for="login-email">Email</label>
+            <input type="email" id="login-email" autocomplete="email" required>
           </div>
           <div class="field">
-            <label for="profile-pin-input">
-              PIN
-              <span class="label-hint">(optional &middot; 4 digits)</span>
-            </label>
-            <input type="password" id="profile-pin-input" inputmode="numeric" maxlength="4" autocomplete="new-password">
+            <label for="login-password">Password</label>
+            <input type="password" id="login-password" autocomplete="current-password" required>
           </div>
-          <p id="profile-create-error" class="name-error" role="alert" hidden></p>
-          <button type="submit" class="primary-btn">Create profile</button>
+          <p id="login-error" class="name-error" role="alert" hidden></p>
+          <button type="submit" class="primary-btn" id="login-submit-btn">Log in</button>
         </form>
+        <p class="auth-switch">No account? <a href="#" id="show-signup-link">Sign up</a></p>
       </div>
 
-      <div id="profile-unlock-screen" hidden>
-        <a href="#" id="unlock-cancel-link" class="back-link">&larr; All profiles</a>
-        <div class="profile-unlock-header">
-          <span class="counter-dot large" id="unlock-dot" aria-hidden="true"></span>
-          <h2 id="unlock-profile-name" tabindex="-1"></h2>
-        </div>
-        <form id="profile-unlock-form" novalidate>
+      <div id="auth-signup-screen" hidden>
+        <a href="#" id="show-login-link" class="back-link">&larr; Log in</a>
+        <h2>Create account</h2>
+        <form id="signup-form" novalidate>
           <div class="field">
-            <label for="profile-unlock-pin">Enter PIN</label>
-            <input type="password" id="profile-unlock-pin" inputmode="numeric" maxlength="4" autocomplete="current-password">
+            <label for="signup-email">Email</label>
+            <input type="email" id="signup-email" autocomplete="email" required>
           </div>
-          <p id="profile-unlock-error" class="name-error" role="alert" hidden></p>
-          <button type="submit" class="primary-btn">Unlock</button>
+          <div class="field">
+            <label for="signup-password">Password
+              <span class="label-hint">(at least 8 characters)</span>
+            </label>
+            <input type="password" id="signup-password" autocomplete="new-password" required minlength="8">
+          </div>
+          <p id="signup-error" class="name-error" role="alert" hidden></p>
+          <button type="submit" class="primary-btn" id="signup-submit-btn">Create account</button>
         </form>
       </div>
 
@@ -67,7 +54,12 @@
       <header>
         <div class="profile-bar">
           <span id="active-profile-label" class="active-profile-label"></span>
-          <button type="button" id="lock-btn" class="lock-btn">Lock</button>
+          <div class="profile-bar-actions">
+            <span id="premium-badge" class="premium-badge" hidden>PRO</span>
+            <a href="#/dashboard" class="dashboard-link">Charts</a>
+            <button type="button" id="join-btn" class="dashboard-link">Join</button>
+            <button type="button" id="logout-btn" class="lock-btn">Log out</button>
+          </div>
         </div>
         <h1>Tally</h1>
         <p id="counter-summary" hidden></p>
@@ -89,7 +81,9 @@
     <section id="detail-view" hidden>
       <div class="detail-nav">
         <a href="#" id="back-link" class="back-link">&larr; All counters</a>
-        <button type="button" id="detail-lock-btn" class="lock-btn">Lock</button>
+        <div class="detail-nav-actions">
+          <button type="button" id="share-btn" class="share-btn">Share</button>
+        </div>
       </div>
 
       <div class="detail-header">
@@ -102,6 +96,7 @@
         <span id="detail-count" aria-live="polite">0</span>
         <button id="detail-increment" aria-label="Increment">+</button>
       </div>
+      <p id="detail-presence" class="presence-indicator" hidden aria-live="polite"></p>
 
       <h3 class="history-heading">History</h3>
       <ul id="history-list" role="list"></ul>
@@ -111,17 +106,60 @@
         <button id="delete-counter-btn" class="danger-outline-btn" type="button">Delete counter</button>
       </div>
     </section>
-  </main>
 
-  <template id="profile-template">
-    <li class="profile-item">
-      <button type="button" class="profile-select-btn" data-profile-id="">
-        <span class="counter-dot" aria-hidden="true"></span>
-        <span class="profile-item-name"></span>
-        <span class="profile-lock-indicator" aria-hidden="true" hidden>PIN</span>
-      </button>
-    </li>
-  </template>
+    <!-- Dashboard view -->
+    <section id="dashboard-view" hidden>
+      <div class="detail-nav">
+        <a href="#" id="dashboard-back-link" class="back-link">&larr; All counters</a>
+      </div>
+      <h2 class="dashboard-heading">Dashboard</h2>
+
+      <div class="dashboard-range" role="group" aria-label="Activity time range">
+        <button class="range-btn active" data-days="7" type="button">7 days</button>
+        <button class="range-btn" data-days="30" type="button">30 days</button>
+      </div>
+
+      <div class="chart-card" id="activity-chart-card">
+        <h3 class="chart-label">Activity over time</h3>
+        <div class="chart-wrap" id="activity-chart-wrap">
+          <canvas id="activity-chart"></canvas>
+        </div>
+      </div>
+
+      <div class="chart-card" id="totals-chart-card">
+        <h3 class="chart-label">Counter totals</h3>
+        <div class="chart-wrap" id="totals-chart-wrap">
+          <canvas id="totals-chart"></canvas>
+        </div>
+      </div>
+
+      <p id="dashboard-empty" class="dashboard-empty" hidden>
+        No counters yet — add one from the home screen to see charts here.
+      </p>
+
+      <div class="dashboard-export">
+        <button id="export-csv-btn" class="export-btn" type="button">Export CSV</button>
+      </div>
+    </section>
+
+    <!-- Shared counter view — accessible without login, via a share link. -->
+    <section id="shared-view" hidden>
+      <div class="detail-nav">
+        <a href="#" id="shared-back-link" class="back-link">&larr; Leave</a>
+      </div>
+      <div class="detail-header">
+        <span class="counter-dot large" id="shared-dot" aria-hidden="true"></span>
+        <h2 id="shared-name" tabindex="-1"></h2>
+      </div>
+      <p class="shared-hint">Shared &mdash; tap together in real time</p>
+      <div class="detail-count-row">
+        <button id="shared-decrement" aria-label="Decrement">&minus;</button>
+        <span id="shared-count" aria-live="polite">0</span>
+        <button id="shared-increment" aria-label="Increment">+</button>
+      </div>
+      <p id="shared-presence" class="presence-indicator" hidden aria-live="polite"></p>
+    </section>
+  </main>
 
   <template id="counter-template">
     <li class="counter" data-id="">
@@ -138,6 +176,33 @@
     </li>
   </template>
 
+  <dialog id="share-modal" aria-labelledby="share-modal-title">
+    <h2 id="share-modal-title">Share counter</h2>
+    <p class="modal-message">Anyone with this link can tap along in real time.</p>
+    <div class="share-code-display">
+      <span id="share-code-text" aria-label="Share code"></span>
+    </div>
+    <div class="share-url-row">
+      <input id="share-url-input" type="text" class="share-url-input" readonly aria-label="Share URL">
+      <button id="share-modal-copy-btn" class="share-copy-btn" type="button">Copy</button>
+    </div>
+    <div class="modal-actions">
+      <button id="share-modal-close-btn" class="modal-cancel-btn" type="button">Close</button>
+    </div>
+  </dialog>
+
+  <dialog id="join-modal" aria-labelledby="join-modal-title">
+    <h2 id="join-modal-title">Join a counter</h2>
+    <p class="modal-message">Enter the 6-character code shared with you.</p>
+    <input id="join-code-input" type="text" class="join-code-input" placeholder="ABC123" maxlength="6"
+           autocomplete="off" autocapitalize="characters" spellcheck="false" aria-label="Share code">
+    <p id="join-error" class="name-error" role="alert" hidden></p>
+    <div class="modal-actions">
+      <button id="join-modal-cancel-btn" class="modal-cancel-btn" type="button">Cancel</button>
+      <button id="join-modal-submit-btn" class="modal-confirm-btn join-confirm-btn" type="button">Join</button>
+    </div>
+  </dialog>
+
   <dialog id="delete-modal" aria-labelledby="delete-modal-title">
     <h2 id="delete-modal-title"></h2>
     <p class="modal-message">This can't be undone.</p>
@@ -147,10 +212,26 @@
     </div>
   </dialog>
 
+  <dialog id="upgrade-modal" aria-labelledby="upgrade-modal-title">
+    <h2 id="upgrade-modal-title">Upgrade to Pro</h2>
+    <p class="modal-message">Free accounts include 3 counters. Upgrade for unlimited.</p>
+    <ul class="upgrade-features">
+      <li>Unlimited counters</li>
+      <li>Full tap history</li>
+      <li>Real-time sharing</li>
+    </ul>
+    <div class="modal-actions">
+      <button id="upgrade-cancel-btn" class="modal-cancel-btn" type="button">Maybe later</button>
+      <button id="upgrade-confirm-btn" class="upgrade-confirm-btn" type="button">Upgrade — $5/mo</button>
+    </div>
+  </dialog>
+
   <!-- Visually hidden live region for screen-reader announcements. -->
   <p id="sr-announce" class="sr-only" aria-live="polite" aria-atomic="true"></p>
 
+  <script src="/node_modules/chart.js/dist/chart.umd.min.js"></script>
   <script src="counters.js"></script>
+  <script src="dashboard.js"></script>
   <script src="app.js"></script>
 </body>
 </html>
