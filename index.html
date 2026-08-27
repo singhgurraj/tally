@@ -13,7 +13,7 @@
 
       <div id="auth-login-screen">
         <h1>Tally</h1>
-        <p class="auth-tagline">Count anything, together.</p>
+        <p class="auth-tagline">Count anything.</p>
         <form id="login-form" novalidate>
           <div class="field">
             <label for="login-email">Email</label>
@@ -58,7 +58,6 @@
             <span id="premium-badge" class="premium-badge" hidden>PRO</span>
             <button type="button" id="home-undo-btn" class="dashboard-link" aria-label="Undo last tap" title="Undo (Ctrl+Z)" hidden>&#8617; Undo</button>
             <a href="#/dashboard" class="dashboard-link">Charts</a>
-            <button type="button" id="join-btn" class="dashboard-link">Join</button>
             <button type="button" id="logout-btn" class="lock-btn">Log out</button>
           </div>
         </div>
@@ -85,7 +84,6 @@
         <div class="detail-nav-actions">
           <button type="button" id="detail-undo-btn" class="undo-redo-btn" aria-label="Undo last tap" disabled title="Undo (Ctrl+Z)">&#8617;</button>
           <button type="button" id="detail-redo-btn" class="undo-redo-btn" aria-label="Redo last tap" disabled title="Redo (Ctrl+Shift+Z)">&#8618;</button>
-          <button type="button" id="share-btn" class="share-btn">Share</button>
         </div>
       </div>
 
@@ -99,7 +97,6 @@
         <span id="detail-count" aria-live="polite">0</span>
         <button id="detail-increment" aria-label="Increment">+</button>
       </div>
-      <p id="detail-presence" class="presence-indicator" hidden aria-live="polite"></p>
 
       <h3 class="history-heading">History</h3>
       <ul id="history-list" role="list"></ul>
@@ -147,23 +144,6 @@
       </div>
     </section>
 
-    <!-- Shared counter view — accessible without login, via a share link. -->
-    <section id="shared-view" hidden>
-      <div class="detail-nav">
-        <a href="#" id="shared-back-link" class="back-link">&larr; Leave</a>
-      </div>
-      <div class="detail-header">
-        <span class="counter-dot large" id="shared-dot" aria-hidden="true"></span>
-        <h2 id="shared-name" tabindex="-1"></h2>
-      </div>
-      <p class="shared-hint">Shared &mdash; tap together in real time</p>
-      <div class="detail-count-row">
-        <button id="shared-decrement" aria-label="Decrement">&minus;</button>
-        <span id="shared-count" aria-live="polite">0</span>
-        <button id="shared-increment" aria-label="Increment">+</button>
-      </div>
-      <p id="shared-presence" class="presence-indicator" hidden aria-live="polite"></p>
-    </section>
   </main>
 
   <template id="counter-template">
@@ -181,33 +161,6 @@
     </li>
   </template>
 
-  <dialog id="share-modal" aria-labelledby="share-modal-title">
-    <h2 id="share-modal-title">Share counter</h2>
-    <p class="modal-message">Anyone with this link can tap along in real time.</p>
-    <div class="share-code-display">
-      <span id="share-code-text" aria-label="Share code"></span>
-    </div>
-    <div class="share-url-row">
-      <input id="share-url-input" type="text" class="share-url-input" readonly aria-label="Share URL">
-      <button id="share-modal-copy-btn" class="share-copy-btn" type="button">Copy</button>
-    </div>
-    <div class="modal-actions">
-      <button id="share-modal-close-btn" class="modal-cancel-btn" type="button">Close</button>
-    </div>
-  </dialog>
-
-  <dialog id="join-modal" aria-labelledby="join-modal-title">
-    <h2 id="join-modal-title">Join a counter</h2>
-    <p class="modal-message">Enter the 6-character code shared with you.</p>
-    <input id="join-code-input" type="text" class="join-code-input" placeholder="ABC123" maxlength="6"
-           autocomplete="off" autocapitalize="characters" spellcheck="false" aria-label="Share code">
-    <p id="join-error" class="name-error" role="alert" hidden></p>
-    <div class="modal-actions">
-      <button id="join-modal-cancel-btn" class="modal-cancel-btn" type="button">Cancel</button>
-      <button id="join-modal-submit-btn" class="modal-confirm-btn join-confirm-btn" type="button">Join</button>
-    </div>
-  </dialog>
-
   <dialog id="delete-modal" aria-labelledby="delete-modal-title">
     <h2 id="delete-modal-title"></h2>
     <p class="modal-message">This can't be undone.</p>
@@ -223,7 +176,6 @@
     <ul class="upgrade-features">
       <li>Unlimited counters</li>
       <li>Full tap history</li>
-      <li>Real-time sharing</li>
     </ul>
     <div class="modal-actions">
       <button id="upgrade-cancel-btn" class="modal-cancel-btn" type="button">Maybe later</button>

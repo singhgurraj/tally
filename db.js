@@ -43,12 +43,6 @@ db.exec(`
   CREATE INDEX IF NOT EXISTS idx_taps_counter_at ON taps(counter_id, at);
 `);
 
-// Idempotent migration: add share_code column for collaborative sharing.
-try {
-  db.exec(`ALTER TABLE counters ADD COLUMN share_code TEXT`);
-  db.exec(`CREATE UNIQUE INDEX IF NOT EXISTS idx_counters_share_code ON counters(share_code)`);
-} catch {}
-
 const s = {
   insertUser: db.prepare("INSERT INTO users (id, email, password_hash, created_at) VALUES (?, ?, ?, ?)"),
   getUserByEmail: db.prepare("SELECT * FROM users WHERE email = ? COLLATE NOCASE"),
@@ -82,10 +76,6 @@ const s = {
       SELECT id FROM taps WHERE counter_id = ? ORDER BY at DESC LIMIT 500
     )
   `),
-
-  getShareCode: db.prepare("SELECT share_code FROM counters WHERE id = ? AND user_id = ?"),
-  setShareCode: db.prepare("UPDATE counters SET share_code = ? WHERE id = ? AND user_id = ?"),
-  getCounterByShareCode: db.prepare("SELECT id, user_id, name, count FROM counters WHERE share_code = ?"),
 
   // Import helpers
   findCounterByName: db.prepare("SELECT id FROM counters WHERE user_id = ? AND name = ? COLLATE NOCASE"),
@@ -143,26 +133,6 @@ function createCounter(userId, name) {
 
 function deleteCounter(id, userId) { return s.deleteCounter.run(id, userId); }
 
-// Returns an existing share code or generates a new unique one.
-function getOrCreateShareCode(counterId, userId) {
-  const row = s.getShareCode.get(counterId, userId);
-  if (!row) return null; // counter not found or not owned by userId
-  if (row.share_code) return row.share_code;
-  const chars = "ABCDEFGHJKLMNPQRSTUVWXYZ23456789"; // omit O I 0 1 (ambiguous)
-  for (let attempt = 0; attempt < 10; attempt++) {
-    const code = Array.from({ length: 6 }, () => chars[Math.floor(Math.random() * chars.length)]).join("");
-    try {
-      s.setShareCode.run(code, counterId, userId);
-      return code;
-    } catch {} // UNIQUE constraint collision — retry
-  }
-  return null;
-}
-
-function getCounterByShareCode(code) {
-  return s.getCounterByShareCode.get(code.toUpperCase());
-}
-
 // ─── Taps ─────────────────────────────────────────────────────────────────────
 
 const applyTap = db.transaction((counterId, delta, at, tz) => {
@@ -219,6 +189,5 @@ module.exports = {
   getSubscription, isPremium, upsertSubscription, updateSubBySubscriptionId,
   listCounters, listCountersWithHistory, countCounters,
   getCounter, getCounterTaps, createCounter, deleteCounter, applyTap,
-  getOrCreateShareCode, getCounterByShareCode,
   importCounters,
 };

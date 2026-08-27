@@ -766,17 +766,6 @@ h1 {
 
 /* ─── Presence indicator ────────────────────────────────────────────────────── */
 
-.presence-indicator {
-  text-align: center;
-  font-size: 0.8rem;
-  color: var(--muted);
-  margin: -1rem 0 1.25rem;
-  min-height: 1.2em;
-}
-
-.presence-indicator.active {
-  color: var(--success);
-}
 
 /* ─── Share modal ───────────────────────────────────────────────────────────── */
 

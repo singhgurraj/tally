@@ -2,9 +2,7 @@
 // Run: node server.js   (default port 3000)
 // Env: SESSION_SECRET, STRIPE_SECRET_KEY, STRIPE_PRICE_ID, STRIPE_WEBHOOK_SECRET, APP_URL
 
-const http = require("http");
 const express = require("express");
-const { WebSocketServer } = require("ws");
 const session = require("express-session");
 const bcrypt = require("bcryptjs");
 const path = require("path");
@@ -15,8 +13,6 @@ const stripe = process.env.STRIPE_SECRET_KEY
   : null;
 
 const app = express();
-const server = http.createServer(app);
-const wss = new WebSocketServer({ server, path: "/ws" });
 
 const FREE_COUNTER_LIMIT = 3;
 
@@ -195,24 +191,16 @@ app.get("/api/counters/:id", requireAuth, (req, res) => {
 // In-process dedup: prevents a retried batch from double-counting.
 const recentTapKeys = new Set();
 
-app.post("/api/taps", (req, res) => {
+app.post("/api/taps", requireAuth, (req, res) => {
   const { taps } = req.body;
   if (!Array.isArray(taps)) return res.status(400).json({ error: "Bad request" });
 
-  const broadcastQueue = new Map(); // userId → [msg, ...]
-
-  for (const { profileId, counterId, delta, at, tz } of taps) {
+  const userId = req.session.userId;
+  for (const { counterId, delta, at, tz } of taps) {
     if (typeof counterId !== "string" || typeof delta !== "number" || typeof at !== "number") continue;
     const safeTz = typeof tz === "string" && tz ? tz : undefined;
-
-    // Accept authenticated or shared-link taps.
-    const userId = req.session?.userId || (typeof profileId === "string" ? profileId : null);
-    if (!userId) continue;
-
-    // Verify ownership.
     if (!db.getCounter(counterId, userId)) continue;
 
-    // Dedup.
     const tapKey = `${counterId}:${at}`;
     if (recentTapKeys.has(tapKey)) continue;
     recentTapKeys.add(tapKey);
@@ -221,14 +209,7 @@ app.post("/api/taps", (req, res) => {
       arr.slice(0, 2500).forEach((k) => recentTapKeys.delete(k));
     }
 
-    const newCount = db.applyTap(counterId, delta, at, safeTz);
-
-    if (!broadcastQueue.has(userId)) broadcastQueue.set(userId, []);
-    broadcastQueue.get(userId).push({ type: "tap", counterId, delta, at, count: newCount, ...(safeTz ? { tz: safeTz } : {}) });
-  }
-
-  for (const [userId, msgs] of broadcastQueue) {
-    for (const msg of msgs) broadcast(userId, msg);
+    db.applyTap(counterId, delta, at, safeTz);
   }
 
   res.json({ ok: true });
@@ -259,38 +240,11 @@ app.post("/api/import", requireAuth, (req, res) => {
     );
     const { countersCreated, tapsImported } = db.importCounters(userId, normalized);
 
-    // Push refreshed state to any open tabs/devices.
-    const updatedCounters = db.listCounters(userId);
-    broadcast(userId, { type: "state", counters: updatedCounters });
-
     res.json({ ok: true, countersCreated, tapsImported });
   } catch (err) {
     console.error("Tally: import error", err);
     res.status(500).json({ error: "Import failed — please try again" });
   }
-});
-
-// Lightweight counter lookup for share-link initial state (unauthenticated).
-app.get("/api/counter/:userId/:counterId", (req, res) => {
-  const { userId, counterId } = req.params;
-  const counter = db.getCounter(counterId, userId);
-  if (!counter) return res.status(404).json({ error: "Not found" });
-  res.json({ counter: { id: counter.id, name: counter.name, count: counter.count } });
-});
-
-// Generate or return a share code for a counter.
-app.post("/api/counters/:id/share", requireAuth, (req, res) => {
-  const code = db.getOrCreateShareCode(req.params.id, req.session.userId);
-  if (!code) return res.status(404).json({ error: "Not found" });
-  const appUrl = process.env.APP_URL || `http://localhost:${process.env.PORT || 3000}`;
-  res.json({ code, shareUrl: `${appUrl}/#/join/${code}` });
-});
-
-// Resolve a share code → counter info (public, no auth required).
-app.get("/api/share/:code", (req, res) => {
-  const counter = db.getCounterByShareCode(req.params.code);
-  if (!counter) return res.status(404).json({ error: "Not found" });
-  res.json({ counter: { id: counter.id, ownerId: counter.user_id, name: counter.name, count: counter.count } });
 });
 
 // ─── Stripe ────────────────────────────────────────────────────────────────────
@@ -324,96 +278,10 @@ app.post("/api/stripe/checkout", requireAuth, async (req, res) => {
   res.json({ url: checkoutSession.url });
 });
 
-// ─── WebSocket ─────────────────────────────────────────────────────────────────
-
-const wsClients = new Map();    // ws → userId
-const counterRooms = new Map(); // counterId → Set<ws>  (presence tracking)
-
-function joinCounterRoom(ws, counterId) {
-  if (!counterRooms.has(counterId)) counterRooms.set(counterId, new Set());
-  counterRooms.get(counterId).add(ws);
-  if (!ws._rooms) ws._rooms = new Set();
-  ws._rooms.add(counterId);
-  broadcastPresence(counterId);
-}
-
-function leaveCounterRoom(ws, counterId) {
-  const room = counterRooms.get(counterId);
-  if (room) {
-    room.delete(ws);
-    if (room.size === 0) counterRooms.delete(counterId);
-    else broadcastPresence(counterId);
-  }
-  ws._rooms?.delete(counterId);
-}
-
-function broadcastPresence(counterId) {
-  const room = counterRooms.get(counterId);
-  if (!room || room.size === 0) return;
-  const payload = JSON.stringify({ type: "presence", counterId, viewers: room.size });
-  for (const ws of room) {
-    if (ws.readyState === 1) ws.send(payload);
-  }
-}
-
-wss.on("connection", (ws) => {
-  ws.on("message", (data) => {
-    try {
-      const msg = JSON.parse(data);
-      if (msg.type === "subscribe") {
-        const userId = msg.userId || msg.profileId;
-        if (typeof userId === "string") {
-          wsClients.set(ws, userId);
-          const counters = db.listCounters(userId);
-          if (counters.length > 0) ws.send(JSON.stringify({ type: "state", counters }));
-        }
-      } else if (msg.type === "join-counter") {
-        if (typeof msg.counterId === "string") joinCounterRoom(ws, msg.counterId);
-      } else if (msg.type === "leave-counter") {
-        if (typeof msg.counterId === "string") leaveCounterRoom(ws, msg.counterId);
-      }
-    } catch {}
-  });
-  ws.on("close", () => {
-    wsClients.delete(ws);
-    if (ws._rooms) {
-      for (const counterId of ws._rooms) {
-        const room = counterRooms.get(counterId);
-        if (room) {
-          room.delete(ws);
-          if (room.size === 0) counterRooms.delete(counterId);
-          else broadcastPresence(counterId);
-        }
-      }
-    }
-  });
-  ws.on("error", () => ws.close());
-});
-
-function broadcast(userId, msg) {
-  const payload = JSON.stringify(msg);
-  const sent = new Set();
-  for (const [ws, uid] of wsClients) {
-    if (uid === userId && ws.readyState === 1) {
-      ws.send(payload);
-      sent.add(ws);
-    }
-  }
-  // Also deliver to guests in the counter's presence room (not subscribed as userId).
-  if (msg.counterId) {
-    const room = counterRooms.get(msg.counterId);
-    if (room) {
-      for (const ws of room) {
-        if (!sent.has(ws) && ws.readyState === 1) ws.send(payload);
-      }
-    }
-  }
-}
-
 // ─── Start ─────────────────────────────────────────────────────────────────────
 
 const PORT = process.env.PORT || 3000;
-server.listen(PORT, () => {
+app.listen(PORT, () => {
   console.log(`Tally server → http://localhost:${PORT}`);
   if (!stripe) console.log("  Stripe: not configured (set STRIPE_SECRET_KEY to enable)");
 });

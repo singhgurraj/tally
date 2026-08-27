@@ -1,5 +1,5 @@
 // app.js — UI layer.  Counter data lives server-side (SQLite); this file
-// manages view state, API calls, and real-time WebSocket sync.
+// manages view state, API calls, and tap queue flushing.
 // Utility globals from counters.js: accentFor, formatTime, HISTORY_DISPLAY_LIMIT,
 // HISTORY_STORE_LIMIT.  Chart functions from dashboard.js: renderDashboard, exportData.
 
@@ -8,15 +8,6 @@ const FREE_COUNTER_LIMIT = 3;
 // Authenticated user.  null = not logged in.
 // Shape: { id: string, email: string, isPremium: boolean }
 let currentUser = null;
-
-// Active share-link session.  null = normal flow.
-// Shape: { profileId: string, counterId: string, name: string, count: number }
-let sharedSession = null;
-
-// userId used for WS subscription / tap submission.
-function effectiveProfileId() {
-  return sharedSession ? sharedSession.profileId : currentUser?.id;
-}
 
 /** @type {{ id: string, name: string, count: number, history?: {delta:number,at:number,tz?:string}[] }[]} */
 let counters = [];
@@ -84,36 +75,6 @@ const importFileInputEl = document.getElementById("import-file-input");
 
 let dashboardDays = 7;
 
-// ─── DOM refs: shared view ─────────────────────────────────────────────────────
-
-const sharedViewEl = document.getElementById("shared-view");
-const sharedDotEl = document.getElementById("shared-dot");
-const sharedNameEl = document.getElementById("shared-name");
-const sharedCountEl = document.getElementById("shared-count");
-const sharedIncrementEl = document.getElementById("shared-increment");
-const sharedDecrementEl = document.getElementById("shared-decrement");
-const sharedBackLinkEl = document.getElementById("shared-back-link");
-const sharedPresenceEl = document.getElementById("shared-presence");
-const shareBtnEl = document.getElementById("share-btn");
-const detailPresenceEl = document.getElementById("detail-presence");
-
-// ─── DOM refs: share modal ─────────────────────────────────────────────────────
-
-const shareModalEl = document.getElementById("share-modal");
-const shareCodeTextEl = document.getElementById("share-code-text");
-const shareUrlInputEl = document.getElementById("share-url-input");
-const shareModalCopyBtnEl = document.getElementById("share-modal-copy-btn");
-const shareModalCloseBtnEl = document.getElementById("share-modal-close-btn");
-
-// ─── DOM refs: join modal ──────────────────────────────────────────────────────
-
-const joinBtnEl = document.getElementById("join-btn");
-const joinModalEl = document.getElementById("join-modal");
-const joinCodeInputEl = document.getElementById("join-code-input");
-const joinErrorEl = document.getElementById("join-error");
-const joinModalCancelBtnEl = document.getElementById("join-modal-cancel-btn");
-const joinModalSubmitBtnEl = document.getElementById("join-modal-submit-btn");
-
 // ─── DOM refs: upgrade modal ───────────────────────────────────────────────────
 
 const upgradeModalEl = document.getElementById("upgrade-modal");
@@ -157,7 +118,6 @@ async function handleLogin(email, password) {
     if (!res.ok) return { ok: false, error: data.error };
     currentUser = { ...data.user, isPremium: data.isPremium };
     await fetchCounters();
-    syncConnect();
     startSyncTimer();
     return { ok: true };
   } catch {
@@ -176,7 +136,6 @@ async function handleSignup(email, password) {
     if (!res.ok) return { ok: false, error: data.error };
     currentUser = { ...data.user, isPremium: false };
     counters = [];
-    syncConnect();
     startSyncTimer();
     return { ok: true };
   } catch {
@@ -185,8 +144,8 @@ async function handleSignup(email, password) {
 }
 
 async function handleLogout() {
-  flushTapQueue();
-  syncDisconnect();
+  await flushTapQueue();
+  stopSyncTimer();
   await fetch("/api/auth/logout", { method: "POST" });
   currentUser = null;
   counters = [];
@@ -201,15 +160,6 @@ async function handleLogout() {
 
 function currentRoute() {
   if (location.hash === "#/dashboard") return { view: "dashboard" };
-  const joinMatch = location.hash.match(/^#\/join\/([A-Z0-9]{6})$/i);
-  if (joinMatch) return { view: "join", code: joinMatch[1].toUpperCase() };
-  const sharedMatch = location.hash.match(/^#\/shared\/([^/]+)\/([^/]+)\/(.+)$/);
-  if (sharedMatch) return {
-    view: "shared",
-    profileId: decodeURIComponent(sharedMatch[1]),
-    counterId: decodeURIComponent(sharedMatch[2]),
-    name: decodeURIComponent(sharedMatch[3]),
-  };
   const detailMatch = location.hash.match(/^#\/counter\/(.+)$/);
   if (detailMatch) return { view: "detail", id: decodeURIComponent(detailMatch[1]) };
   return { view: "home" };
@@ -227,7 +177,6 @@ async function renderApp({ moveFocus = false } = {}) {
     authViewEl.hidden = true;
     homeViewEl.hidden = true;
     detailViewEl.hidden = true;
-    sharedViewEl.hidden = true;
     dashboardViewEl.hidden = false;
 
     // Lazy-load history for all counters.
@@ -246,54 +195,10 @@ async function renderApp({ moveFocus = false } = {}) {
     return;
   }
 
-  // Join via share code — resolve then redirect to shared view.
-  if (route.view === "join") {
-    sharedViewEl.hidden = false;
-    authViewEl.hidden = true;
-    homeViewEl.hidden = true;
-    detailViewEl.hidden = true;
-    dashboardViewEl.hidden = true;
-    sharedNameEl.textContent = "Loading…";
-    sharedCountEl.textContent = "–";
-    try {
-      const res = await fetch(`/api/share/${encodeURIComponent(route.code)}`);
-      if (!res.ok) throw new Error("not found");
-      const { counter } = await res.json();
-      history.replaceState(null, "",
-        `#/shared/${encodeURIComponent(counter.ownerId)}` +
-        `/${encodeURIComponent(counter.id)}` +
-        `/${encodeURIComponent(counter.name)}`
-      );
-      await enterSharedView(counter.ownerId, counter.id, counter.name);
-    } catch {
-      showToast("Counter not found. The link may be invalid.", { error: true });
-      history.replaceState(null, "", location.pathname);
-      renderApp();
-    }
-    return;
-  }
-
-  // Shared view: no auth needed.
-  if (route.view === "shared") {
-    if (!sharedSession || sharedSession.counterId !== route.counterId) {
-      enterSharedView(route.profileId, route.counterId, route.name);
-    } else {
-      showSharedView();
-    }
-    return;
-  }
-
-  // Leaving shared view.
-  if (sharedSession) {
-    exitSharedView();
-    if (currentUser) { syncConnect(); startSyncTimer(); }
-  }
-
   // Not logged in: show auth screen.
   if (!currentUser) {
     homeViewEl.hidden = true;
     detailViewEl.hidden = true;
-    sharedViewEl.hidden = true;
     dashboardViewEl.hidden = true;
     authViewEl.hidden = false;
     showAuthLoginScreen();
@@ -301,15 +206,12 @@ async function renderApp({ moveFocus = false } = {}) {
   }
 
   authViewEl.hidden = true;
-  sharedViewEl.hidden = true;
   dashboardViewEl.hidden = true;
 
   if (activeProfileLabelEl) activeProfileLabelEl.textContent = currentUser.email;
   if (premiumBadgeEl) premiumBadgeEl.hidden = !currentUser.isPremium;
 
   if (route.view === "detail" && counters.some((c) => c.id === route.id)) {
-    // Leave any previously joined counter room before joining a new one.
-    if (lastDetailId && lastDetailId !== route.id) wsLeaveCounter(lastDetailId);
     lastDetailId = route.id;
     homeViewEl.hidden = true;
     detailViewEl.hidden = false;
@@ -328,10 +230,8 @@ async function renderApp({ moveFocus = false } = {}) {
     }
 
     renderDetail(route.id);
-    wsJoinCounter(route.id);
     if (moveFocus) detailNameEl.focus();
   } else {
-    if (lastDetailId) wsLeaveCounter(lastDetailId);
     detailViewEl.hidden = true;
     homeViewEl.hidden = false;
     renderHome();
@@ -572,7 +472,6 @@ function undoLastTap() {
   );
   if (queueIdx !== -1) {
     tapQueue.splice(queueIdx, 1);
-    sentTapKeys.delete(`${action.counterId}:${action.at}`);
     c.count -= action.delta;
     if (c.history) {
       // Remove the matching history entry (search from the end — it's recent).
@@ -859,87 +758,6 @@ deleteBtnEl.addEventListener("click", async () => {
   }
 });
 
-// ─── Event wiring: share button / share modal ──────────────────────────────────
-
-shareBtnEl.addEventListener("click", async () => {
-  const { id } = currentRoute();
-  if (!id || !currentUser) return;
-  shareBtnEl.disabled = true;
-  shareBtnEl.textContent = "Loading…";
-  try {
-    const res = await fetch(`/api/counters/${id}/share`, { method: "POST" });
-    const data = await res.json();
-    if (!res.ok) throw new Error(data.error || "error");
-    const shareUrl = `${location.origin}${location.pathname}#/join/${data.code}`;
-    shareCodeTextEl.textContent = data.code;
-    shareUrlInputEl.value = shareUrl;
-    shareModalEl.showModal();
-    shareModalCloseBtnEl.focus();
-  } catch {
-    showToast("Couldn't generate share link — please try again.", { error: true });
-  } finally {
-    shareBtnEl.disabled = false;
-    shareBtnEl.textContent = "Share";
-  }
-});
-
-shareModalCloseBtnEl.addEventListener("click", () => shareModalEl.close());
-
-shareModalCopyBtnEl.addEventListener("click", async () => {
-  const url = shareUrlInputEl.value;
-  try {
-    await navigator.clipboard.writeText(url);
-    shareModalCopyBtnEl.textContent = "Copied!";
-    setTimeout(() => { shareModalCopyBtnEl.textContent = "Copy"; }, 2000);
-  } catch {
-    shareUrlInputEl.select();
-  }
-});
-
-// ─── Event wiring: join modal ──────────────────────────────────────────────────
-
-if (joinBtnEl) joinBtnEl.addEventListener("click", () => {
-  clearError(joinErrorEl);
-  joinCodeInputEl.value = "";
-  joinModalEl.showModal();
-  joinCodeInputEl.focus();
-});
-
-joinModalCancelBtnEl.addEventListener("click", () => joinModalEl.close());
-
-joinCodeInputEl.addEventListener("input", () => {
-  clearError(joinErrorEl);
-  joinCodeInputEl.value = joinCodeInputEl.value.toUpperCase();
-});
-
-joinModalSubmitBtnEl.addEventListener("click", async () => {
-  const code = joinCodeInputEl.value.trim().toUpperCase();
-  if (code.length !== 6) {
-    showError(joinErrorEl, "Enter the full 6-character code.");
-    return;
-  }
-  joinModalSubmitBtnEl.disabled = true;
-  joinModalSubmitBtnEl.textContent = "Joining…";
-  try {
-    const res = await fetch(`/api/share/${encodeURIComponent(code)}`);
-    if (!res.ok) throw new Error("not found");
-    const { counter } = await res.json();
-    joinModalEl.close();
-    location.hash = `#/join/${code}`;
-  } catch {
-    showError(joinErrorEl, "Counter not found. Check the code and try again.");
-  } finally {
-    joinModalSubmitBtnEl.disabled = false;
-    joinModalSubmitBtnEl.textContent = "Join";
-  }
-});
-
-// ─── Event wiring: shared view ─────────────────────────────────────────────────
-
-sharedIncrementEl.addEventListener("click", () => sharedTap(1));
-sharedDecrementEl.addEventListener("click", () => sharedTap(-1));
-sharedBackLinkEl.addEventListener("click", (e) => { e.preventDefault(); location.hash = ""; });
-
 // ─── Event wiring: dashboard ───────────────────────────────────────────────────
 
 dashboardBackLinkEl.addEventListener("click", (e) => { e.preventDefault(); location.hash = ""; });
@@ -1024,99 +842,25 @@ importFileInputEl.addEventListener("change", async () => {
   }
 });
 
-// ─── WebSocket sync ────────────────────────────────────────────────────────────
+// ─── Tap flush ─────────────────────────────────────────────────────────────────
 
-const SYNC_INTERVAL_MS = 3000;
+const FLUSH_INTERVAL_MS = 3000;
 
-let syncWs = null;
-let syncReconnectTimer = null;
-let syncIntervalTimer = null;
-
-// Counter presence room tracking.
-let _pendingJoinCounterId = null;
-let _joinedCounterId = null;
-
-function wsJoinCounter(counterId) {
-  _pendingJoinCounterId = counterId;
-  _joinedCounterId = counterId;
-  if (syncWs?.readyState === 1) {
-    syncWs.send(JSON.stringify({ type: "join-counter", counterId }));
-    _pendingJoinCounterId = null;
-  }
-}
-
-function wsLeaveCounter(counterId) {
-  if (_joinedCounterId === counterId) _joinedCounterId = null;
-  _pendingJoinCounterId = null;
-  if (syncWs?.readyState === 1) {
-    syncWs.send(JSON.stringify({ type: "leave-counter", counterId }));
-  }
-  // Clear presence display.
-  if (detailPresenceEl) { detailPresenceEl.textContent = ""; detailPresenceEl.hidden = true; detailPresenceEl.classList.remove("active"); }
-  if (sharedPresenceEl) { sharedPresenceEl.textContent = ""; sharedPresenceEl.hidden = true; sharedPresenceEl.classList.remove("active"); }
-}
-
+let flushTimer = null;
 const tapQueue = [];
-const sentTapKeys = new Set();
-
-function syncConnect() {
-  const pid = effectiveProfileId();
-  if (!pid || syncWs) return;
-  const wsUrl = location.origin.replace(/^http/, "ws") + "/ws";
-  const ws = new WebSocket(wsUrl);
-  syncWs = ws;
-
-  ws.addEventListener("open", () => {
-    ws.send(JSON.stringify({ type: "subscribe", profileId: pid }));
-    if (_pendingJoinCounterId) {
-      ws.send(JSON.stringify({ type: "join-counter", counterId: _pendingJoinCounterId }));
-      _pendingJoinCounterId = null;
-    }
-  });
-
-  ws.addEventListener("message", (e) => {
-    try {
-      const msg = JSON.parse(e.data);
-      if (msg.type === "tap") {
-        if (sharedSession) applySharedTap(msg);
-        else applySyncedTap(msg);
-      } else if (msg.type === "state") {
-        if (sharedSession) applySharedState(msg.counters);
-        else applySyncedState(msg.counters);
-      } else if (msg.type === "presence") {
-        applyPresence(msg);
-      }
-    } catch {}
-  });
-
-  ws.addEventListener("close", () => {
-    if (syncWs === ws) syncWs = null;
-    if (effectiveProfileId()) syncReconnectTimer = setTimeout(syncConnect, 3000);
-  });
-
-  ws.addEventListener("error", () => ws.close());
-}
-
-function syncDisconnect() {
-  clearTimeout(syncReconnectTimer);
-  clearInterval(syncIntervalTimer);
-  syncIntervalTimer = null;
-  if (syncWs) { syncWs.close(); syncWs = null; }
-}
 
 function startSyncTimer() {
-  if (syncIntervalTimer) return;
-  syncIntervalTimer = setInterval(flushTapQueue, SYNC_INTERVAL_MS);
+  if (flushTimer) return;
+  flushTimer = setInterval(flushTapQueue, FLUSH_INTERVAL_MS);
+}
+
+function stopSyncTimer() {
+  clearInterval(flushTimer);
+  flushTimer = null;
 }
 
 function enqueueTap(counterId, counterName, delta, at, tz) {
-  const key = `${counterId}:${at}`;
-  sentTapKeys.add(key);
-  if (sentTapKeys.size > 500) {
-    const arr = [...sentTapKeys];
-    arr.slice(0, 250).forEach((k) => sentTapKeys.delete(k));
-  }
-  tapQueue.push({ profileId: effectiveProfileId(), counterId, name: counterName, delta, at, tz });
+  tapQueue.push({ counterId, name: counterName, delta, at, tz });
 }
 
 async function flushTapQueue() {
@@ -1134,136 +878,6 @@ async function flushTapQueue() {
   }
 }
 
-// ─── Shared view ───────────────────────────────────────────────────────────────
-
-function showSharedView() {
-  authViewEl.hidden = true;
-  homeViewEl.hidden = true;
-  detailViewEl.hidden = true;
-  sharedViewEl.hidden = false;
-  sharedNameEl.textContent = sharedSession.name;
-  sharedCountEl.textContent = sharedSession.count;
-  sharedDotEl.style.setProperty("--accent-color", accentFor(sharedSession.counterId));
-  requestAnimationFrame(() => sharedNameEl.focus());
-}
-
-async function enterSharedView(profileId, counterId, name) {
-  syncDisconnect();
-  sharedSession = { profileId, counterId, name, count: 0 };
-  showSharedView();
-  syncConnect();
-  startSyncTimer();
-  wsJoinCounter(counterId);
-
-  try {
-    const res = await fetch(
-      `/api/counter/${encodeURIComponent(profileId)}/${encodeURIComponent(counterId)}`
-    );
-    if (res.ok) {
-      const { counter } = await res.json();
-      if (sharedSession && sharedSession.counterId === counterId) {
-        sharedSession.count = counter.count;
-        sharedCountEl.textContent = counter.count;
-      }
-    }
-  } catch {}
-}
-
-function exitSharedView() {
-  if (sharedSession) wsLeaveCounter(sharedSession.counterId);
-  flushTapQueue();
-  syncDisconnect();
-  sharedSession = null;
-}
-
-async function sharedTap(delta) {
-  if (!sharedSession) return;
-  const at = Date.now();
-  const tz = Intl.DateTimeFormat().resolvedOptions().timeZone || undefined;
-  sharedSession.count += delta;
-  sharedCountEl.textContent = sharedSession.count;
-  pulseElement(sharedCountEl);
-  enqueueTap(sharedSession.counterId, sharedSession.name, delta, at, tz);
-}
-
-function applySharedTap({ counterId, delta, at, count }) {
-  const key = `${counterId}:${at}`;
-  if (sentTapKeys.has(key)) { sentTapKeys.delete(key); return; }
-  if (!sharedSession || sharedSession.counterId !== counterId) return;
-  sharedSession.count = count;
-  sharedCountEl.textContent = count;
-  pulseElement(sharedCountEl);
-}
-
-function applyPresence({ counterId, viewers }) {
-  const teammates = viewers - 1; // subtract self
-  const text = teammates <= 0 ? "" : teammates === 1 ? "1 teammate here" : `${teammates} teammates here`;
-  const isActive = teammates > 0;
-
-  const route = currentRoute();
-  if (route.view === "detail" && route.id === counterId && detailPresenceEl) {
-    detailPresenceEl.textContent = text;
-    detailPresenceEl.hidden = !text;
-    detailPresenceEl.classList.toggle("active", isActive);
-  }
-  if (sharedSession?.counterId === counterId && sharedPresenceEl) {
-    sharedPresenceEl.textContent = text;
-    sharedPresenceEl.hidden = !text;
-    sharedPresenceEl.classList.toggle("active", isActive);
-  }
-}
-
-function applySharedState(serverCounters) {
-  if (!sharedSession || !Array.isArray(serverCounters)) return;
-  const sc = serverCounters.find((c) => c.id === sharedSession.counterId);
-  if (!sc) return;
-  sharedSession.count = sc.count;
-  sharedCountEl.textContent = sc.count;
-}
-
-// ─── Synced tap / state from another device ────────────────────────────────────
-
-function applySyncedTap({ counterId, delta, at, count, tz }) {
-  const key = `${counterId}:${at}`;
-  if (sentTapKeys.has(key)) { sentTapKeys.delete(key); return; }
-
-  const c = counters.find((item) => item.id === counterId);
-  if (!c) return;
-
-  c.count = count;
-  if (c.history) {
-    c.history.push({ delta, at, ...(tz ? { tz } : {}) });
-    if (c.history.length > HISTORY_STORE_LIMIT) {
-      c.history.splice(0, c.history.length - HISTORY_STORE_LIMIT);
-    }
-  }
-
-  const route = currentRoute();
-  if (route.view === "detail" && route.id === counterId) {
-    updateDetailCount(c);
-    if (c.history) prependHistoryEntry(c.history[c.history.length - 1], c.history.length);
-  } else {
-    const countEl = counterElements.get(counterId)?.querySelector(".counter-count");
-    if (countEl) { countEl.textContent = c.count; pulseElement(countEl); }
-  }
-}
-
-function applySyncedState(serverCounters) {
-  if (!Array.isArray(serverCounters) || serverCounters.length === 0) return;
-  let hasUnknown = false;
-  for (const sc of serverCounters) {
-    const c = counters.find((item) => item.id === sc.id);
-    if (!c) { hasUnknown = true; continue; }
-    if (c.count !== sc.count) {
-      c.count = sc.count;
-      const countEl = counterElements.get(c.id)?.querySelector(".counter-count");
-      if (countEl) { countEl.textContent = c.count; pulseElement(countEl); }
-    }
-  }
-  // An unknown counter means another device created one — re-fetch and rebuild.
-  if (hasUnknown) fetchCounters().then(() => renderHome());
-}
-
 // ─── Background flush ──────────────────────────────────────────────────────────
 
 document.addEventListener("visibilitychange", () => {
@@ -1271,7 +885,7 @@ document.addEventListener("visibilitychange", () => {
 });
 
 window.addEventListener("beforeunload", () => {
-  if (tapQueue.length > 0 && effectiveProfileId()) {
+  if (tapQueue.length > 0 && currentUser) {
     const blob = new Blob([JSON.stringify({ taps: tapQueue })], { type: "application/json" });
     navigator.sendBeacon?.("/api/taps", blob);
   }
@@ -1286,7 +900,6 @@ window.addEventListener("hashchange", () => renderApp({ moveFocus: true }));
 
   if (currentUser) {
     await fetchCounters();
-    syncConnect();
     startSyncTimer();
   }
 
