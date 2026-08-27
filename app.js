@@ -1,7 +1,7 @@
 // app.js — UI layer.  Counter data lives server-side (SQLite); this file
 // manages view state, API calls, and real-time WebSocket sync.
 // Utility globals from counters.js: accentFor, formatTime, HISTORY_DISPLAY_LIMIT,
-// HISTORY_STORE_LIMIT.  Chart functions from dashboard.js: renderDashboard, exportCSV.
+// HISTORY_STORE_LIMIT.  Chart functions from dashboard.js: renderDashboard, exportData.
 
 const FREE_COUNTER_LIMIT = 3;
 
@@ -62,6 +62,9 @@ const detailNameEl = document.getElementById("detail-name");
 const detailCountEl = document.getElementById("detail-count");
 const detailIncrementEl = document.getElementById("detail-increment");
 const detailDecrementEl = document.getElementById("detail-decrement");
+const detailUndoBtnEl = document.getElementById("detail-undo-btn");
+const detailRedoBtnEl = document.getElementById("detail-redo-btn");
+const homeUndoBtnEl = document.getElementById("home-undo-btn");
 const historyListEl = document.getElementById("history-list");
 const historyEmptyEl = document.getElementById("history-empty");
 const backLinkEl = document.getElementById("back-link");
@@ -75,7 +78,9 @@ const deleteModalConfirmEl = document.getElementById("delete-modal-confirm");
 
 const dashboardViewEl = document.getElementById("dashboard-view");
 const dashboardBackLinkEl = document.getElementById("dashboard-back-link");
-const exportCsvBtnEl = document.getElementById("export-csv-btn");
+const exportDataBtnEl = document.getElementById("export-data-btn");
+const importDataBtnEl = document.getElementById("import-data-btn");
+const importFileInputEl = document.getElementById("import-file-input");
 
 let dashboardDays = 7;
 
@@ -142,33 +147,41 @@ async function fetchCounters() {
 }
 
 async function handleLogin(email, password) {
-  const res = await fetch("/api/auth/login", {
-    method: "POST",
-    headers: { "Content-Type": "application/json" },
-    body: JSON.stringify({ email, password }),
-  });
-  const data = await res.json();
-  if (!res.ok) return { ok: false, error: data.error };
-  currentUser = { ...data.user, isPremium: data.isPremium };
-  await fetchCounters();
-  syncConnect();
-  startSyncTimer();
-  return { ok: true };
+  try {
+    const res = await fetch("/api/auth/login", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ email, password }),
+    });
+    const data = await res.json();
+    if (!res.ok) return { ok: false, error: data.error };
+    currentUser = { ...data.user, isPremium: data.isPremium };
+    await fetchCounters();
+    syncConnect();
+    startSyncTimer();
+    return { ok: true };
+  } catch {
+    return { ok: false, error: "Couldn't connect — please check your connection and try again." };
+  }
 }
 
 async function handleSignup(email, password) {
-  const res = await fetch("/api/auth/signup", {
-    method: "POST",
-    headers: { "Content-Type": "application/json" },
-    body: JSON.stringify({ email, password }),
-  });
-  const data = await res.json();
-  if (!res.ok) return { ok: false, error: data.error };
-  currentUser = { ...data.user, isPremium: false };
-  counters = [];
-  syncConnect();
-  startSyncTimer();
-  return { ok: true };
+  try {
+    const res = await fetch("/api/auth/signup", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ email, password }),
+    });
+    const data = await res.json();
+    if (!res.ok) return { ok: false, error: data.error };
+    currentUser = { ...data.user, isPremium: false };
+    counters = [];
+    syncConnect();
+    startSyncTimer();
+    return { ok: true };
+  } catch {
+    return { ok: false, error: "Couldn't connect — please check your connection and try again." };
+  }
 }
 
 async function handleLogout() {
@@ -177,6 +190,9 @@ async function handleLogout() {
   await fetch("/api/auth/logout", { method: "POST" });
   currentUser = null;
   counters = [];
+  undoStack.length = 0;
+  redoStack.length = 0;
+  updateUndoRedoButtons();
   location.hash = "";
   renderApp();
 }
@@ -250,7 +266,7 @@ async function renderApp({ moveFocus = false } = {}) {
       );
       await enterSharedView(counter.ownerId, counter.id, counter.name);
     } catch {
-      announce("Counter not found. The link may be invalid.");
+      showToast("Counter not found. The link may be invalid.", { error: true });
       history.replaceState(null, "", location.pathname);
       renderApp();
     }
@@ -441,24 +457,57 @@ upgradeConfirmBtnEl.addEventListener("click", async () => {
     } else {
       upgradeConfirmBtnEl.disabled = false;
       upgradeConfirmBtnEl.textContent = "Upgrade — $5/mo";
-      alert(data.error || "Couldn't start checkout — please try again.");
+      showToast(data.error || "Couldn't start checkout — please try again.", { error: true });
     }
   } catch {
     upgradeConfirmBtnEl.disabled = false;
     upgradeConfirmBtnEl.textContent = "Upgrade — $5/mo";
+    showToast("Couldn't start checkout — please check your connection.", { error: true });
   }
 });
 
-// ─── Count logic ───────────────────────────────────────────────────────────────
+// ─── Undo / redo ───────────────────────────────────────────────────────────────
+// undoStack entries: { counterId, delta, at }
+//   `at` is the timestamp used when the tap was enqueued.  It lets us find and
+//   cancel the tap in tapQueue before it is flushed to the server.
+//
+// redoStack entries: { counterId, delta }
+//   No `at` — redo always creates a fresh tap with a new timestamp.
+//
+// Cancel-before-flush: if the original tap is still in tapQueue when undo fires,
+// we remove it directly.  No reversal tap is sent, so the server never sees a
+// phantom entry, the history list stays clean, and the dashboard charts are not
+// skewed by undo/redo noise.  Only when the tap has already been flushed do we
+// fall back to sending a reversal, with a guaranteed-unique timestamp so the
+// server dedup never confuses the reversal with the original.
 
-async function changeCount(id, delta) {
-  const c = counters.find((item) => item.id === id);
-  if (!c) return;
+const undoStack = [];
+const redoStack = [];
+const UNDO_LIMIT = 50; // cap memory; oldest entries drop silently
 
-  const at = Date.now();
+function updateUndoRedoButtons() {
+  const hasUndo = undoStack.length > 0;
+  if (detailUndoBtnEl) detailUndoBtnEl.disabled = !hasUndo;
+  if (detailRedoBtnEl) detailRedoBtnEl.disabled = redoStack.length === 0;
+  if (homeUndoBtnEl) homeUndoBtnEl.hidden = !hasUndo;
+}
+
+// Monotonic timestamp — strictly increases even when Date.now() repeats across
+// rapid taps, undos, and redos in the same millisecond.  This prevents two ops
+// from sharing an `at` value that would collide in the server's dedup check.
+let _lastTapAt = 0;
+function nextTapAt() {
+  const now = Date.now();
+  _lastTapAt = now > _lastTapAt ? now : _lastTapAt + 1;
+  return _lastTapAt;
+}
+
+// Apply a delta to a counter optimistically, enqueue the server tap, refresh
+// the relevant UI element, and return the `at` timestamp so callers can store
+// it in the undo stack for later queue-based cancellation.
+function applyTapLocally(c, delta) {
+  const at = nextTapAt();
   const tz = Intl.DateTimeFormat().resolvedOptions().timeZone || undefined;
-
-  // Optimistic local update.
   c.count += delta;
   if (c.history) {
     c.history.push({ delta, at, tz });
@@ -466,18 +515,93 @@ async function changeCount(id, delta) {
       c.history.splice(0, c.history.length - HISTORY_STORE_LIMIT);
     }
   }
-
-  enqueueTap(id, c.name, delta, at, tz);
+  enqueueTap(c.id, c.name, delta, at, tz);
 
   const route = currentRoute();
-  if (route.view === "detail" && route.id === id) {
+  if (route.view === "detail" && route.id === c.id) {
     updateDetailCount(c);
     if (c.history) prependHistoryEntry(c.history[c.history.length - 1], c.history.length);
   } else {
-    const li = listEl.querySelector(`.counter[data-id="${id}"]`);
+    const li = listEl.querySelector(`.counter[data-id="${c.id}"]`);
     const countEl = li?.querySelector(".counter-count");
     if (countEl) { countEl.textContent = c.count; pulseElement(countEl); }
   }
+  return at;
+}
+
+// Refresh the counter's count display and history list after a cancellation
+// (where a history entry was removed rather than appended).
+function refreshCounterUI(c) {
+  const route = currentRoute();
+  if (route.view === "detail" && route.id === c.id) {
+    detailCountEl.textContent = c.count;
+    pulseElement(detailCountEl);
+    renderHistory(c);
+  } else {
+    const li = listEl.querySelector(`.counter[data-id="${c.id}"]`);
+    const countEl = li?.querySelector(".counter-count");
+    if (countEl) { countEl.textContent = c.count; pulseElement(countEl); }
+  }
+}
+
+function undoLastTap() {
+  const action = undoStack.pop();
+  if (!action) return;
+  const c = counters.find((item) => item.id === action.counterId);
+  if (!c) { updateUndoRedoButtons(); return; }
+
+  // Prefer cancellation: find and remove the original tap from the queue so
+  // no reversal entry ever touches the server or the history.
+  const queueIdx = tapQueue.findIndex(
+    (t) => t.counterId === action.counterId && t.at === action.at
+  );
+  if (queueIdx !== -1) {
+    tapQueue.splice(queueIdx, 1);
+    sentTapKeys.delete(`${action.counterId}:${action.at}`);
+    c.count -= action.delta;
+    if (c.history) {
+      // Remove the matching history entry (search from the end — it's recent).
+      for (let i = c.history.length - 1; i >= 0; i--) {
+        if (c.history[i].at === action.at && c.history[i].delta === action.delta) {
+          c.history.splice(i, 1);
+          break;
+        }
+      }
+    }
+    refreshCounterUI(c);
+  } else {
+    // Already flushed — send a reversal tap.  nextTapAt() guarantees a unique
+    // timestamp so the server dedup never silently drops this reversal.
+    applyTapLocally(c, -action.delta);
+  }
+
+  redoStack.push({ counterId: action.counterId, delta: action.delta });
+  updateUndoRedoButtons();
+  announce(`Undid tap on "${c.name}".`);
+}
+
+function redoLastTap() {
+  const action = redoStack.pop();
+  if (!action) return;
+  const c = counters.find((item) => item.id === action.counterId);
+  if (!c) { updateUndoRedoButtons(); return; }
+  const at = applyTapLocally(c, action.delta);
+  undoStack.push({ counterId: action.counterId, delta: action.delta, at });
+  if (undoStack.length > UNDO_LIMIT) undoStack.shift();
+  updateUndoRedoButtons();
+  announce(`Redid tap on "${c.name}".`);
+}
+
+// ─── Count logic ───────────────────────────────────────────────────────────────
+
+async function changeCount(id, delta) {
+  const c = counters.find((item) => item.id === id);
+  if (!c) return;
+  const at = applyTapLocally(c, delta);
+  undoStack.push({ counterId: id, delta, at });
+  if (undoStack.length > UNDO_LIMIT) undoStack.shift();
+  redoStack.length = 0; // new tap invalidates pending redo history
+  updateUndoRedoButtons();
 }
 
 function pulseElement(el) {
@@ -556,11 +680,29 @@ function prependHistoryEntry(entry, totalStored) {
 
 const nameErrorEl = document.getElementById("name-error");
 const srAnnounceEl = document.getElementById("sr-announce");
+const toastEl = document.getElementById("toast");
 
+// Polite announcement for screen readers when the UI already reflects the
+// change visually (e.g. a new counter appeared in the list).
 function announce(msg) {
   if (!srAnnounceEl) return;
   srAnnounceEl.textContent = "";
   requestAnimationFrame(() => { srAnnounceEl.textContent = msg; });
+}
+
+// Visible notification for all users.  Pass { error: true } for failures so
+// the toast uses a red background and an assertive ARIA role (interrupts the
+// screen reader immediately rather than waiting for a pause).
+let _toastTimer = null;
+function showToast(msg, { error = false, duration = 5000 } = {}) {
+  clearTimeout(_toastTimer);
+  // Swap role before revealing so the attribute change fires a fresh SR event.
+  toastEl.setAttribute("role", error ? "alert" : "status");
+  toastEl.setAttribute("aria-live", error ? "assertive" : "polite");
+  toastEl.textContent = msg;
+  toastEl.classList.toggle("toast-error", error);
+  toastEl.hidden = false;
+  _toastTimer = setTimeout(() => { toastEl.hidden = true; }, duration);
 }
 
 function showError(el, msg) { el.textContent = msg; el.hidden = false; }
@@ -680,6 +822,17 @@ detailDecrementEl.addEventListener("click", async () => {
   if (id) await changeCount(id, -1);
 });
 
+homeUndoBtnEl.addEventListener("click", () => undoLastTap());
+detailUndoBtnEl.addEventListener("click", () => undoLastTap());
+detailRedoBtnEl.addEventListener("click", () => redoLastTap());
+
+document.addEventListener("keydown", (e) => {
+  const mod = navigator.platform.startsWith("Mac") ? e.metaKey : e.ctrlKey;
+  if (!mod) return;
+  if (e.key === "z" && !e.shiftKey) { e.preventDefault(); undoLastTap(); }
+  else if ((e.key === "z" && e.shiftKey) || e.key === "y") { e.preventDefault(); redoLastTap(); }
+});
+
 backLinkEl.addEventListener("click", (e) => { e.preventDefault(); location.hash = ""; });
 
 deleteBtnEl.addEventListener("click", async () => {
@@ -708,7 +861,7 @@ shareBtnEl.addEventListener("click", async () => {
     shareModalEl.showModal();
     shareModalCloseBtnEl.focus();
   } catch {
-    announce("Couldn't generate share link — please try again.");
+    showToast("Couldn't generate share link — please try again.", { error: true });
   } finally {
     shareBtnEl.disabled = false;
     shareBtnEl.textContent = "Share";
@@ -783,7 +936,78 @@ dashboardViewEl.addEventListener("click", (e) => {
   renderDashboard(counters, dashboardDays);
 });
 
-exportCsvBtnEl.addEventListener("click", () => exportCSV(counters));
+exportDataBtnEl.addEventListener("click", async () => {
+  // Ensure full history is loaded before exporting.
+  if (counters.some((c) => !c.history)) {
+    const res = await fetch("/api/counters?include=history");
+    if (res.ok) {
+      const { counters: full } = await res.json();
+      for (const fc of full) {
+        const c = counters.find((x) => x.id === fc.id);
+        if (c) c.history = fc.history || [];
+      }
+    }
+  }
+  exportData(counters);
+});
+
+importDataBtnEl.addEventListener("click", () => {
+  importFileInputEl.value = "";
+  importFileInputEl.click();
+});
+
+importFileInputEl.addEventListener("change", async () => {
+  const file = importFileInputEl.files?.[0];
+  if (!file) return;
+
+  importDataBtnEl.disabled = true;
+  importDataBtnEl.textContent = "Importing…";
+
+  let text;
+  try {
+    text = await file.text();
+  } catch {
+    showToast("Import failed: could not read the file.", { error: true });
+    importDataBtnEl.disabled = false;
+    importDataBtnEl.textContent = "Import";
+    return;
+  }
+
+  let parsed;
+  try {
+    parsed = JSON.parse(text);
+  } catch {
+    showToast("Import failed: the file doesn't appear to be a valid Tally export.", { error: true });
+    importDataBtnEl.disabled = false;
+    importDataBtnEl.textContent = "Import";
+    return;
+  }
+
+  try {
+    const res = await fetch("/api/import", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify(parsed),
+    });
+    const data = await res.json();
+    if (!res.ok) {
+      showToast(`Import failed: ${data.error || "Unknown error"}`, { error: true });
+      return;
+    }
+    await fetchCounters();
+    renderApp();
+    const msg = [
+      data.countersCreated ? `${data.countersCreated} counter${data.countersCreated !== 1 ? "s" : ""} added` : "",
+      data.tapsImported ? `${data.tapsImported} tap${data.tapsImported !== 1 ? "s" : ""} imported` : "",
+    ].filter(Boolean).join(", ");
+    showToast(msg ? `Import complete: ${msg}.` : "Import complete — no new data.");
+  } catch {
+    showToast("Import failed — please check your connection and try again.", { error: true });
+  } finally {
+    importDataBtnEl.disabled = false;
+    importDataBtnEl.textContent = "Import";
+  }
+});
 
 // ─── WebSocket sync ────────────────────────────────────────────────────────────
 

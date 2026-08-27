@@ -617,6 +617,20 @@ h1 {
 
 .dashboard-export {
   padding: 0.25rem 0 1rem;
+  display: flex;
+  gap: 0.5rem;
+  flex-wrap: wrap;
+}
+
+.export-btn.secondary-btn {
+  background: transparent;
+  color: var(--muted);
+  border-color: var(--border);
+}
+
+.export-btn.secondary-btn:hover:not(:disabled) {
+  background: var(--border);
+  color: var(--text);
 }
 
 .export-btn {
@@ -813,6 +827,30 @@ h1 {
 
 .join-confirm-btn:hover:not(:disabled) {
   background: var(--accent-hover);
+}
+
+/* Undo / redo buttons in the detail nav */
+
+.undo-redo-btn {
+  border: 1px solid var(--border);
+  background: var(--bg);
+  color: var(--muted);
+  border-radius: 8px;
+  padding: 0.25rem 0.5rem;
+  font-size: 1rem;
+  line-height: 1;
+  cursor: pointer;
+  transition: background 120ms ease, color 120ms ease, opacity 120ms ease;
+}
+
+.undo-redo-btn:hover:not(:disabled) {
+  background: var(--border);
+  color: var(--text);
+}
+
+.undo-redo-btn:disabled {
+  opacity: 0.35;
+  cursor: default;
 }
 
 /* Share button in the detail nav */
@@ -1278,4 +1316,37 @@ h1 {
   /* Controls drop under the name, keeping dot column empty for alignment. */
   .counter-controls { grid-column: 2; grid-row: 2; }
 
+}
+
+/* ─── Toast notification ────────────────────────────────────────────────────── */
+/* Visible to all users. Errors use role="alert" (assertive); status messages
+   use role="status" (polite) — set by showToast() before revealing the element
+   so the attribute change triggers a fresh SR announcement. */
+
+#toast {
+  position: fixed;
+  bottom: 1.5rem;
+  left: 50%;
+  transform: translateX(-50%);
+  background: var(--text);
+  color: var(--bg);
+  padding: 0.65rem 1.1rem;
+  border-radius: 10px;
+  font-size: 0.875rem;
+  font-weight: 500;
+  max-width: min(90vw, 420px);
+  text-align: center;
+  z-index: 200;
+  box-shadow: 0 4px 16px rgba(0, 0, 0, 0.18);
+  animation: toast-in 150ms ease;
+}
+
+#toast.toast-error {
+  background: #dc2626;
+  color: #fff;
+}
+
+@keyframes toast-in {
+  from { opacity: 0; transform: translateX(-50%) translateY(6px); }
+  to   { opacity: 1; transform: translateX(-50%) translateY(0); }
 }

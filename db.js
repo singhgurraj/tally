@@ -86,6 +86,11 @@ const s = {
   getShareCode: db.prepare("SELECT share_code FROM counters WHERE id = ? AND user_id = ?"),
   setShareCode: db.prepare("UPDATE counters SET share_code = ? WHERE id = ? AND user_id = ?"),
   getCounterByShareCode: db.prepare("SELECT id, user_id, name, count FROM counters WHERE share_code = ?"),
+
+  // Import helpers
+  findCounterByName: db.prepare("SELECT id FROM counters WHERE user_id = ? AND name = ? COLLATE NOCASE"),
+  tapExistsAt: db.prepare("SELECT 1 FROM taps WHERE counter_id = ? AND at = ? LIMIT 1"),
+  recomputeCount: db.prepare("UPDATE counters SET count = (SELECT COALESCE(SUM(delta), 0) FROM taps WHERE counter_id = ?) WHERE id = ?"),
 };
 
 // ─── Users ────────────────────────────────────────────────────────────────────
@@ -167,10 +172,50 @@ const applyTap = db.transaction((counterId, delta, at, tz) => {
   return s.getCount.get(counterId)?.count ?? 0;
 });
 
+// ─── Import ───────────────────────────────────────────────────────────────────
+// Idempotent: matched by counter name (case-insensitive) and tap timestamp.
+// Returns counts of newly created counters and inserted taps.
+
+const importCounters = db.transaction((userId, countersToImport) => {
+  let countersCreated = 0;
+  let tapsImported = 0;
+
+  for (const { name, history } of countersToImport) {
+    if (typeof name !== "string" || !name.trim()) continue;
+    if (!Array.isArray(history)) continue;
+
+    let row = s.findCounterByName.get(userId, name.trim());
+    let counterId;
+    if (row) {
+      counterId = row.id;
+    } else {
+      counterId = randomUUID();
+      s.insertCounter.run(counterId, userId, name.trim(), Date.now());
+      countersCreated++;
+    }
+
+    for (const { delta, at, tz } of history) {
+      if (typeof delta !== "number" || !Number.isFinite(delta)) continue;
+      if (typeof at !== "number" || !Number.isFinite(at)) continue;
+      if (s.tapExistsAt.get(counterId, at)) continue;
+      const safeTz = typeof tz === "string" && tz ? tz : null;
+      s.insertTap.run(counterId, delta, at, safeTz);
+      tapsImported++;
+    }
+
+    // Recompute authoritative count from all taps, then prune to storage limit.
+    s.recomputeCount.run(counterId, counterId);
+    s.pruneTaps.run(counterId, counterId);
+  }
+
+  return { countersCreated, tapsImported };
+});
+
 module.exports = {
   createUser, getUserByEmail, getUserById,
   getSubscription, isPremium, upsertSubscription, updateSubBySubscriptionId,
   listCounters, listCountersWithHistory, countCounters,
   getCounter, getCounterTaps, createCounter, deleteCounter, applyTap,
   getOrCreateShareCode, getCounterByShareCode,
+  importCounters,
 };

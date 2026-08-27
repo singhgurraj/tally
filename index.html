@@ -56,6 +56,7 @@
           <span id="active-profile-label" class="active-profile-label"></span>
           <div class="profile-bar-actions">
             <span id="premium-badge" class="premium-badge" hidden>PRO</span>
+            <button type="button" id="home-undo-btn" class="dashboard-link" aria-label="Undo last tap" title="Undo (Ctrl+Z)" hidden>&#8617; Undo</button>
             <a href="#/dashboard" class="dashboard-link">Charts</a>
             <button type="button" id="join-btn" class="dashboard-link">Join</button>
             <button type="button" id="logout-btn" class="lock-btn">Log out</button>
@@ -82,6 +83,8 @@
       <div class="detail-nav">
         <a href="#" id="back-link" class="back-link">&larr; All counters</a>
         <div class="detail-nav-actions">
+          <button type="button" id="detail-undo-btn" class="undo-redo-btn" aria-label="Undo last tap" disabled title="Undo (Ctrl+Z)">&#8617;</button>
+          <button type="button" id="detail-redo-btn" class="undo-redo-btn" aria-label="Redo last tap" disabled title="Redo (Ctrl+Shift+Z)">&#8618;</button>
           <button type="button" id="share-btn" class="share-btn">Share</button>
         </div>
       </div>
@@ -138,7 +141,9 @@
       </p>
 
       <div class="dashboard-export">
-        <button id="export-csv-btn" class="export-btn" type="button">Export CSV</button>
+        <button id="export-data-btn" class="export-btn" type="button">Export</button>
+        <button id="import-data-btn" class="export-btn secondary-btn" type="button">Import</button>
+        <input id="import-file-input" type="file" accept=".json,application/json" hidden aria-hidden="true">
       </div>
     </section>
 
@@ -226,8 +231,11 @@
     </div>
   </dialog>
 
-  <!-- Visually hidden live region for screen-reader announcements. -->
+  <!-- Visually hidden live region for polite screen-reader announcements. -->
   <p id="sr-announce" class="sr-only" aria-live="polite" aria-atomic="true"></p>
+
+  <!-- Toast: visible to all users; assertive for errors, polite otherwise. -->
+  <div id="toast" hidden></div>
 
   <script src="/node_modules/chart.js/dist/chart.umd.min.js"></script>
   <script src="counters.js"></script>

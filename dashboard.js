@@ -153,7 +153,7 @@ function renderDashboard(counters, days) {
   document.getElementById('activity-chart-card').hidden = !hasCounters;
   document.getElementById('totals-chart-card').hidden = !hasCounters;
   document.getElementById('dashboard-empty').hidden = hasCounters;
-  document.getElementById('export-csv-btn').disabled = !hasCounters;
+  document.getElementById('export-data-btn').disabled = !hasCounters;
 
   if (!hasCounters) {
     if (_activityChart) { _activityChart.destroy(); _activityChart = null; }
@@ -165,27 +165,28 @@ function renderDashboard(counters, days) {
   _renderTotalsChart(counters);
 }
 
-// Public: generate and download a CSV of all tap history for `counters`.
-function exportCSV(counters) {
-  const rows = [['Counter', 'Date', 'Time', 'Delta']];
-  for (const c of counters) {
-    for (const { delta, at, tz } of c.history) {
-      const d = new Date(at);
-      const date = d.toISOString().slice(0, 10);
-      const timeOpts = { timeStyle: 'medium' };
-      if (tz) { try { timeOpts.timeZone = tz; } catch {} }
-      const time = d.toLocaleTimeString(undefined, timeOpts);
-      rows.push([c.name, date, time, delta]);
-    }
-  }
-  const csv = rows
-    .map(r => r.map(v => `"${String(v).replace(/"/g, '""')}"`).join(','))
-    .join('\n');
+// Public: export all counter data as a versioned JSON file suitable for
+// re-import.  Preserves exact timestamps and timezone strings so history
+// survives a full export → import round-trip without data loss.
+function exportData(counters) {
+  const payload = {
+    version: 1,
+    exportedAt: Date.now(),
+    counters: counters.map(c => ({
+      name: c.name,
+      history: (c.history || []).map(({ delta, at, tz }) => {
+        const entry = { delta, at };
+        if (tz) entry.tz = tz;
+        return entry;
+      }),
+    })),
+  };
 
-  const url = URL.createObjectURL(new Blob([csv], { type: 'text/csv' }));
+  const json = JSON.stringify(payload, null, 2);
+  const url = URL.createObjectURL(new Blob([json], { type: 'application/json' }));
   const a = Object.assign(document.createElement('a'), {
     href: url,
-    download: `tally-${new Date().toISOString().slice(0, 10)}.csv`,
+    download: `tally-${new Date().toISOString().slice(0, 10)}.json`,
   });
   document.body.appendChild(a);
   a.click();

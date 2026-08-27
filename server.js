@@ -20,6 +20,30 @@ const wss = new WebSocketServer({ server, path: "/ws" });
 
 const FREE_COUNTER_LIMIT = 3;
 
+// ─── Export / import format versioning ────────────────────────────────────────
+// Bump EXPORT_VERSION and add a migration entry whenever the JSON export schema
+// changes.  Each entry upgrades data from that version to version+1, so a file
+// exported by any past release can always be imported by the current server.
+
+const EXPORT_VERSION = 1;
+
+const importMigrations = {
+  // Example for a future schema bump:
+  // 1: (data) => ({ ...data, counters: data.counters.map(c => ({ ...c, color: null })) }),
+};
+
+function migrateImportData(data) {
+  let version = typeof data.version === "number" ? data.version : 0;
+  if (version > EXPORT_VERSION) {
+    throw new Error(`Export version ${version} is newer than this server supports (${EXPORT_VERSION})`);
+  }
+  while (version < EXPORT_VERSION) {
+    if (importMigrations[version]) data = importMigrations[version](data);
+    version++;
+  }
+  return data;
+}
+
 // ─── Stripe webhook (raw body — must precede express.json()) ──────────────────
 
 app.post("/api/stripe/webhook", express.raw({ type: "application/json" }), (req, res) => {
@@ -200,6 +224,39 @@ app.post("/api/taps", (req, res) => {
   }
 
   res.json({ ok: true });
+});
+
+// ─── Import ────────────────────────────────────────────────────────────────────
+
+app.post("/api/import", requireAuth, (req, res) => {
+  const userId = req.session.userId;
+
+  let data;
+  try {
+    data = migrateImportData(req.body);
+  } catch (err) {
+    return res.status(400).json({ error: err.message || "Unrecognised export format" });
+  }
+
+  if (!Array.isArray(data.counters)) {
+    return res.status(400).json({ error: "Invalid import file: missing counters array" });
+  }
+  if (data.counters.length > 500) {
+    return res.status(400).json({ error: "Import file contains too many counters (max 500)" });
+  }
+
+  try {
+    const { countersCreated, tapsImported } = db.importCounters(userId, data.counters);
+
+    // Push refreshed state to any open tabs/devices.
+    const updatedCounters = db.listCounters(userId);
+    broadcast(userId, { type: "state", counters: updatedCounters });
+
+    res.json({ ok: true, countersCreated, tapsImported });
+  } catch (err) {
+    console.error("Tally: import error", err);
+    res.status(500).json({ error: "Import failed — please try again" });
+  }
 });
 
 // Lightweight counter lookup for share-link initial state (unauthenticated).
