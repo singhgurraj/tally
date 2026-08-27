@@ -67,7 +67,7 @@ const s = {
   `),
   updateSubBySubId: db.prepare("UPDATE subscriptions SET status = ?, updated_at = ? WHERE stripe_subscription_id = ?"),
 
-  listCounters: db.prepare("SELECT id, name, count FROM counters WHERE user_id = ? ORDER BY created_at ASC"),
+  listCounters: db.prepare("SELECT id, name, count FROM counters WHERE user_id = ? ORDER BY created_at ASC, rowid ASC"),
   countCounters: db.prepare("SELECT COUNT(*) AS n FROM counters WHERE user_id = ?"),
   getCounter: db.prepare("SELECT * FROM counters WHERE id = ? AND user_id = ?"),
   insertCounter: db.prepare("INSERT INTO counters (id, user_id, name, count, created_at) VALUES (?, ?, ?, 0, ?)"),
@@ -179,6 +179,9 @@ const applyTap = db.transaction((counterId, delta, at, tz) => {
 const importCounters = db.transaction((userId, countersToImport) => {
   let countersCreated = 0;
   let tapsImported = 0;
+  // Use an incrementing base so each new counter gets a unique created_at,
+  // preserving the order from the import file even when the loop runs fast.
+  let importTs = Date.now();
 
   for (const { name, history } of countersToImport) {
     if (typeof name !== "string" || !name.trim()) continue;
@@ -190,7 +193,7 @@ const importCounters = db.transaction((userId, countersToImport) => {
       counterId = row.id;
     } else {
       counterId = randomUUID();
-      s.insertCounter.run(counterId, userId, name.trim(), Date.now());
+      s.insertCounter.run(counterId, userId, name.trim(), importTs++);
       countersCreated++;
     }
 

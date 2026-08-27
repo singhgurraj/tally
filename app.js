@@ -365,30 +365,43 @@ function showAuthSignupScreen() {
 
 // ─── Home view ─────────────────────────────────────────────────────────────────
 
-function renderHome() {
-  listEl.innerHTML = "";
+// counterId → <li> element. Kept in sync with listEl so tap/sync handlers can
+// update the DOM in O(1) without a querySelector scan over the whole list.
+const counterElements = new Map();
+
+function updateSummary() {
   emptyStateEl.hidden = counters.length > 0;
   summaryEl.hidden = counters.length === 0;
-
   if (currentUser?.isPremium) {
     summaryEl.textContent = `${counters.length} counter${counters.length !== 1 ? "s" : ""}`;
   } else {
     summaryEl.textContent = `${counters.length} / ${FREE_COUNTER_LIMIT} counters (free plan)`;
   }
+}
 
+function buildCounterNode(counter) {
+  const frag = templateEl.content.cloneNode(true);
+  const li = frag.querySelector(".counter");
+  li.dataset.id = counter.id;
+  li.style.setProperty("--accent-color", accentFor(counter.id));
+  const nameLink = frag.querySelector(".counter-name");
+  nameLink.textContent = counter.name;
+  nameLink.href = `#/counter/${encodeURIComponent(counter.id)}`;
+  frag.querySelector(".counter-count").textContent = counter.count;
+  frag.querySelector(".decrement").setAttribute("aria-label", `Decrement ${counter.name}`);
+  frag.querySelector(".increment").setAttribute("aria-label", `Increment ${counter.name}`);
+  frag.querySelector(".remove").setAttribute("aria-label", `Delete ${counter.name}`);
+  return { frag, li };
+}
+
+function renderHome() {
+  listEl.innerHTML = "";
+  counterElements.clear();
+  updateSummary();
   for (const counter of counters) {
-    const node = templateEl.content.cloneNode(true);
-    const li = node.querySelector(".counter");
-    li.dataset.id = counter.id;
-    li.style.setProperty("--accent-color", accentFor(counter.id));
-    const nameLink = node.querySelector(".counter-name");
-    nameLink.textContent = counter.name;
-    nameLink.href = `#/counter/${encodeURIComponent(counter.id)}`;
-    node.querySelector(".counter-count").textContent = counter.count;
-    node.querySelector(".decrement").setAttribute("aria-label", `Decrement ${counter.name}`);
-    node.querySelector(".increment").setAttribute("aria-label", `Increment ${counter.name}`);
-    node.querySelector(".remove").setAttribute("aria-label", `Delete ${counter.name}`);
-    listEl.appendChild(node);
+    const { frag, li } = buildCounterNode(counter);
+    counterElements.set(counter.id, li);
+    listEl.appendChild(frag);
   }
 }
 
@@ -413,14 +426,15 @@ async function addCounter(name) {
       if (res.status === 403) { showUpgradeModal(); return { ok: false, reason: "limit" }; }
       return { ok: false, reason: "error", message: data.error };
     }
-    counters.push({ id: data.id, name: data.name, count: 0 });
+    const counter = { id: data.id, name: data.name, count: 0 };
+    counters.push(counter);
     announce(`Counter "${data.name}" added.`);
-    renderHome();
-    const newLi = listEl.lastElementChild;
-    if (newLi) {
-      newLi.classList.add("counter-enter");
-      newLi.addEventListener("animationend", () => newLi.classList.remove("counter-enter"), { once: true });
-    }
+    updateSummary();
+    const { frag, li: newLi } = buildCounterNode(counter);
+    newLi.classList.add("counter-enter");
+    newLi.addEventListener("animationend", () => newLi.classList.remove("counter-enter"), { once: true });
+    counterElements.set(counter.id, newLi);
+    listEl.appendChild(frag);
     return { ok: true };
   } catch {
     return { ok: false, reason: "error" };
@@ -431,8 +445,11 @@ async function removeCounter(id) {
   const target = counters.find((c) => c.id === id);
   try { await fetch(`/api/counters/${id}`, { method: "DELETE" }); } catch {}
   counters = counters.filter((c) => c.id !== id);
+  const li = counterElements.get(id);
+  if (li) li.remove();
+  counterElements.delete(id);
+  updateSummary();
   if (target) announce(`Counter "${target.name}" deleted.`);
-  renderHome();
 }
 
 // ─── Upgrade modal ─────────────────────────────────────────────────────────────
@@ -522,8 +539,7 @@ function applyTapLocally(c, delta) {
     updateDetailCount(c);
     if (c.history) prependHistoryEntry(c.history[c.history.length - 1], c.history.length);
   } else {
-    const li = listEl.querySelector(`.counter[data-id="${c.id}"]`);
-    const countEl = li?.querySelector(".counter-count");
+    const countEl = counterElements.get(c.id)?.querySelector(".counter-count");
     if (countEl) { countEl.textContent = c.count; pulseElement(countEl); }
   }
   return at;
@@ -538,8 +554,7 @@ function refreshCounterUI(c) {
     pulseElement(detailCountEl);
     renderHistory(c);
   } else {
-    const li = listEl.querySelector(`.counter[data-id="${c.id}"]`);
-    const countEl = li?.querySelector(".counter-count");
+    const countEl = counterElements.get(c.id)?.querySelector(".counter-count");
     if (countEl) { countEl.textContent = c.count; pulseElement(countEl); }
   }
 }
@@ -1228,21 +1243,25 @@ function applySyncedTap({ counterId, delta, at, count, tz }) {
     updateDetailCount(c);
     if (c.history) prependHistoryEntry(c.history[c.history.length - 1], c.history.length);
   } else {
-    const li = listEl.querySelector(`.counter[data-id="${counterId}"]`);
-    const countEl = li?.querySelector(".counter-count");
+    const countEl = counterElements.get(counterId)?.querySelector(".counter-count");
     if (countEl) { countEl.textContent = c.count; pulseElement(countEl); }
   }
 }
 
 function applySyncedState(serverCounters) {
   if (!Array.isArray(serverCounters) || serverCounters.length === 0) return;
-  let changed = false;
+  let hasUnknown = false;
   for (const sc of serverCounters) {
     const c = counters.find((item) => item.id === sc.id);
-    if (!c) continue;
-    if (c.count !== sc.count) { c.count = sc.count; changed = true; }
+    if (!c) { hasUnknown = true; continue; }
+    if (c.count !== sc.count) {
+      c.count = sc.count;
+      const countEl = counterElements.get(c.id)?.querySelector(".counter-count");
+      if (countEl) { countEl.textContent = c.count; pulseElement(countEl); }
+    }
   }
-  if (changed) renderApp();
+  // An unknown counter means another device created one — re-fetch and rebuild.
+  if (hasUnknown) fetchCounters().then(() => renderHome());
 }
 
 // ─── Background flush ──────────────────────────────────────────────────────────

@@ -27,6 +27,14 @@ const FREE_COUNTER_LIMIT = 3;
 
 const EXPORT_VERSION = 1;
 
+// Slice a string to at most `max` grapheme clusters so emoji and other
+// multi-code-unit characters are never split at a truncation boundary.
+const _segmenter = new Intl.Segmenter();
+function truncateName(str, max) {
+  const segs = [..._segmenter.segment(str)];
+  return segs.length <= max ? str : segs.slice(0, max).map(s => s.segment).join("");
+}
+
 const importMigrations = {
   // Example for a future schema bump:
   // 1: (data) => ({ ...data, counters: data.counters.map(c => ({ ...c, color: null })) }),
@@ -157,7 +165,7 @@ app.get("/api/counters", requireAuth, (req, res) => {
 
 app.post("/api/counters", requireAuth, (req, res) => {
   const userId = req.session.userId;
-  const name = typeof req.body.name === "string" ? req.body.name.trim().slice(0, 60) : "";
+  const name = typeof req.body.name === "string" ? truncateName(req.body.name.trim(), 60) : "";
   if (!name) return res.status(400).json({ error: "Counter name required" });
 
   if (!db.isPremium(userId) && db.countCounters(userId) >= FREE_COUNTER_LIMIT) {
@@ -246,7 +254,10 @@ app.post("/api/import", requireAuth, (req, res) => {
   }
 
   try {
-    const { countersCreated, tapsImported } = db.importCounters(userId, data.counters);
+    const normalized = data.counters.map(c =>
+      typeof c?.name === "string" ? { ...c, name: truncateName(c.name.trim(), 60) } : c
+    );
+    const { countersCreated, tapsImported } = db.importCounters(userId, normalized);
 
     // Push refreshed state to any open tabs/devices.
     const updatedCounters = db.listCounters(userId);
