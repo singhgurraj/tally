@@ -8,8 +8,39 @@
   --accent: #2563eb;
   --accent-hover: #1d4ed8;
   --danger: #dc2626;
+  --danger-hover: #b91c1c;
   --shadow: 0 1px 2px rgba(20, 20, 30, 0.05), 0 1px 8px rgba(20, 20, 30, 0.04);
   --shadow-hover: 0 2px 4px rgba(20, 20, 30, 0.06), 0 6px 16px rgba(20, 20, 30, 0.08);
+
+  /* Semantic colours not covered by the core palette.
+     Use these instead of bare hex values so theming stays centralised. */
+  --success: #16a34a;
+  --warning: #f59e0b;
+
+  /* All <dialog> elements share the same dim overlay colour. */
+  --modal-backdrop: rgba(0, 0, 0, 0.45);
+
+  /* Radius scale — reach for these before using a bare px value.
+     sm    → tiny ghost controls (e.g. × remove button)
+     md    → small inline buttons, nav pills
+     input → standard text inputs and mid-weight action buttons
+     card  → list-item cards (counter rows, profile items, chart cards)
+     lg    → large content cards and modals */
+  --radius-sm:    6px;
+  --radius-md:    8px;
+  --radius-input: 10px;
+  --radius-card:  14px;
+  --radius-lg:    16px;
+
+  /* Transition presets — use these so timing stays consistent across elements.
+     btn   → any pressable control (colour shift + press-scale transform)
+     input → text fields (border-colour shift + focus-ring glow)
+     card  → hover-lift surfaces (shadow depth + translateY lift)
+     color → colour-only changes with no transform (links, icon tints) */
+  --transition-btn:   background 120ms ease, transform 80ms ease;
+  --transition-input: border-color 120ms ease, box-shadow 120ms ease;
+  --transition-card:  box-shadow 150ms ease, transform 150ms ease;
+  --transition-color: background 120ms ease, color 120ms ease;
 }
 
 @media (prefers-color-scheme: dark) {
@@ -32,6 +63,35 @@
 :focus-visible {
   outline: 2px solid var(--accent);
   outline-offset: 2px;
+}
+
+/* Windows High Contrast Mode: the OS colour ButtonText is guaranteed to contrast
+   against any system background, so it replaces the CSS custom-property accent.
+   Inputs that suppress the outline in favour of border-colour + box-shadow get
+   an explicit outline restored here so keyboard focus is never invisible. */
+@media (forced-colors: active) {
+  :focus-visible {
+    outline: 3px solid ButtonText;
+    outline-offset: 2px;
+  }
+
+  #new-counter-name:focus-visible,
+  .join-code-input:focus-visible,
+  .field input:focus-visible {
+    outline: 3px solid ButtonText;
+    box-shadow: none;
+  }
+}
+
+/* Styled input focus — border-colour glow replaces the default outline on all
+   app text fields. Add new styled inputs here instead of writing a separate
+   :focus-visible rule per element. */
+#new-counter-name:focus-visible,
+.join-code-input:focus-visible,
+.field input:focus-visible {
+  outline: none;
+  border-color: var(--accent);
+  box-shadow: 0 0 0 3px color-mix(in srgb, var(--accent) 20%, transparent);
 }
 
 /* Visually hidden but accessible — used for screen-reader-only announcements. */
@@ -90,17 +150,11 @@ h1 {
   flex: 1;
   padding: 0.65rem 0.85rem;
   border: 1px solid var(--border);
-  border-radius: 10px;
+  border-radius: var(--radius-input);
   background: var(--surface);
   color: var(--text);
   font-size: 1rem;
-  transition: border-color 120ms ease, box-shadow 120ms ease;
-}
-
-#new-counter-name:focus-visible {
-  outline: none;
-  border-color: var(--accent);
-  box-shadow: 0 0 0 3px color-mix(in srgb, var(--accent) 20%, transparent);
+  transition: var(--transition-input);
 }
 
 #new-counter-form button {
@@ -144,9 +198,9 @@ h1 {
 .counter {
   background: var(--surface);
   border: 1px solid var(--border);
-  border-radius: 14px;
+  border-radius: var(--radius-card);
   box-shadow: var(--shadow);
-  transition: box-shadow 150ms ease, transform 150ms ease;
+  transition: var(--transition-card);
 }
 
 .counter:hover {
@@ -295,20 +349,24 @@ h1 {
   line-height: 1.5;
 }
 
+/* All <dialog> elements share the same dim backdrop colour. */
+#delete-modal::backdrop,
+#share-modal::backdrop,
+#join-modal::backdrop,
+#upgrade-modal::backdrop {
+  background: var(--modal-backdrop);
+}
+
 /* Delete confirmation modal */
 
 #delete-modal {
   border: 1px solid var(--border);
-  border-radius: 16px;
+  border-radius: var(--radius-lg);
   background: var(--surface);
   color: var(--text);
   padding: 1.5rem;
   width: min(90vw, 360px);
   box-shadow: var(--shadow-hover);
-}
-
-#delete-modal::backdrop {
-  background: rgba(0, 0, 0, 0.45);
 }
 
 #delete-modal h2 {
@@ -359,7 +417,7 @@ h1 {
 }
 
 .modal-confirm-btn:hover {
-  background: #b91c1c;
+  background: var(--danger-hover);
 }
 
 .modal-cancel-btn:active,
@@ -370,9 +428,9 @@ h1 {
 #storage-warning {
   margin: 0 0 1.25rem;
   padding: 0.75rem 1rem;
-  border: 1px solid #f59e0b;
-  border-radius: 10px;
-  background: color-mix(in srgb, #f59e0b 15%, transparent);
+  border: 1px solid var(--warning);
+  border-radius: var(--radius-input);
+  background: color-mix(in srgb, var(--warning) 15%, transparent);
   color: var(--text);
   font-size: 0.875rem;
   line-height: 1.4;
@@ -491,7 +549,7 @@ h1 {
 }
 
 .history-delta.positive {
-  color: #16a34a;
+  color: var(--success);
 }
 
 .history-delta.negative {
@@ -565,7 +623,7 @@ h1 {
   border-radius: 20px;
   background: var(--bg);
   color: var(--muted);
-  font-size: 0.82rem;
+  font-size: 0.8rem;
   font-weight: 600;
   cursor: pointer;
   transition: background 120ms ease, color 120ms ease, border-color 120ms ease;
@@ -717,7 +775,7 @@ h1 {
 }
 
 .presence-indicator.active {
-  color: #16a34a;
+  color: var(--success);
 }
 
 /* ─── Share modal ───────────────────────────────────────────────────────────── */
@@ -725,17 +783,12 @@ h1 {
 #share-modal,
 #join-modal {
   border: 1px solid var(--border);
-  border-radius: 16px;
+  border-radius: var(--radius-lg);
   background: var(--surface);
   color: var(--text);
   padding: 1.5rem;
   width: min(90vw, 380px);
   box-shadow: var(--shadow-hover);
-}
-
-#share-modal::backdrop,
-#join-modal::backdrop {
-  background: rgba(0, 0, 0, 0.45);
 }
 
 #share-modal h2,
@@ -782,12 +835,12 @@ h1 {
   color: var(--text);
   border-radius: 8px;
   padding: 0.4rem 0.75rem;
-  font-size: 0.85rem;
+  font-size: 0.875rem;
   font-weight: 600;
   cursor: pointer;
   white-space: nowrap;
   flex-shrink: 0;
-  transition: background 120ms ease;
+  transition: var(--transition-btn);
 }
 
 .share-copy-btn:hover {
@@ -801,7 +854,7 @@ h1 {
   width: 100%;
   padding: 0.65rem 0.85rem;
   border: 1px solid var(--border);
-  border-radius: 10px;
+  border-radius: var(--radius-input);
   background: var(--surface);
   color: var(--text);
   font-size: 1.4rem;
@@ -811,13 +864,7 @@ h1 {
   text-align: center;
   text-transform: uppercase;
   margin-bottom: 0.5rem;
-  transition: border-color 120ms ease, box-shadow 120ms ease;
-}
-
-.join-code-input:focus-visible {
-  outline: none;
-  border-color: var(--accent);
-  box-shadow: 0 0 0 3px color-mix(in srgb, var(--accent) 20%, transparent);
+  transition: var(--transition-input);
 }
 
 .join-confirm-btn {
@@ -942,16 +989,12 @@ h1 {
 
 #upgrade-modal {
   border: 1px solid var(--border);
-  border-radius: 16px;
+  border-radius: var(--radius-lg);
   background: var(--surface);
   color: var(--text);
   padding: 1.5rem;
   width: min(90vw, 380px);
   box-shadow: var(--shadow-hover);
-}
-
-#upgrade-modal::backdrop {
-  background: rgba(0, 0, 0, 0.45);
 }
 
 #upgrade-modal h2 {
@@ -981,7 +1024,7 @@ h1 {
   content: "✓";
   position: absolute;
   left: 0;
-  color: #16a34a;
+  color: var(--success);
   font-weight: 700;
 }
 
@@ -1049,9 +1092,9 @@ h1 {
 .profile-item {
   background: var(--surface);
   border: 1px solid var(--border);
-  border-radius: 14px;
+  border-radius: var(--radius-card);
   box-shadow: var(--shadow);
-  transition: box-shadow 150ms ease, transform 150ms ease;
+  transition: var(--transition-card);
 }
 
 .profile-item:hover {
@@ -1071,7 +1114,7 @@ h1 {
   font-size: 1rem;
   color: var(--text);
   cursor: pointer;
-  border-radius: 13px; /* 1 px less than .profile-item to stay inside the border */
+  border-radius: calc(var(--radius-card) - 1px); /* inset 1 px from card edge to stay inside the border */
 }
 
 .profile-item-name {
@@ -1170,17 +1213,11 @@ h1 {
 .field input {
   padding: 0.65rem 0.85rem;
   border: 1px solid var(--border);
-  border-radius: 10px;
+  border-radius: var(--radius-input);
   background: var(--surface);
   color: var(--text);
   font-size: 1rem;
-  transition: border-color 120ms ease, box-shadow 120ms ease;
-}
-
-.field input:focus-visible {
-  outline: none;
-  border-color: var(--accent);
-  box-shadow: 0 0 0 3px color-mix(in srgb, var(--accent) 20%, transparent);
+  transition: var(--transition-input);
 }
 
 /* Full-width primary action button (create / unlock) */
@@ -1191,13 +1228,13 @@ h1 {
   margin-top: 0.25rem;
   padding: 0.7rem 1rem;
   border: none;
-  border-radius: 10px;
+  border-radius: var(--radius-input);
   background: var(--accent);
   color: white;
   font-size: 1rem;
   font-weight: 600;
   cursor: pointer;
-  transition: background 120ms ease, transform 80ms ease;
+  transition: var(--transition-btn);
 }
 
 .primary-btn:hover {
@@ -1264,10 +1301,19 @@ h1 {
   margin-bottom: 0;
 }
 
-/* Enlarge interactive elements to comfortable touch targets on touch devices
-   without affecting visual size on desktop. Covers all tap-able controls;
-   add new ones here as features are added. */
+/* Touch target enlargement — pointer: coarse means a finger/stylus, not a mouse.
+ *
+ * WCAG 2.5.5 recommends at least 44 × 44 CSS pixels. All interactive elements
+ * below are visually smaller than that on desktop; this block enlarges them on
+ * touch screens WITHOUT changing their visual size, via min-height / min-width
+ * or extra padding depending on the element's layout role.
+ *
+ * ADDING NEW ELEMENTS: if a new button or link looks smaller than ~44 px in
+ * either dimension on mobile, add a rule here. Use min-height for elements that
+ * are already full-width; add both min-height and min-width for narrow icon
+ * buttons so the hit area expands in both axes. */
 @media (pointer: coarse) {
+  /* Counter increment / decrement */
   .counter-controls button {
     width: 2.75rem;
     height: 2.75rem;
@@ -1279,9 +1325,51 @@ h1 {
     min-height: 2.75rem;
   }
 
-  /* Back / cancel links: taller padding makes them easier to hit. */
+  /* Back / nav links: extra block padding extends the hit area vertically. */
   .back-link {
     padding-block: 0.5rem;
+  }
+
+  /* Small nav-bar buttons: lock, share, dashboard link, undo/redo.
+     These are narrow icon/label buttons — both axes need enlarging. */
+  .lock-btn,
+  .share-btn,
+  .dashboard-link,
+  .undo-redo-btn {
+    min-height: 2.75rem;
+    min-width: 2.75rem;
+  }
+
+  /* Dashboard range-selector pills. */
+  .range-btn {
+    min-height: 2.75rem;
+  }
+
+  /* Modal action buttons (delete confirm / cancel, upgrade). */
+  .modal-cancel-btn,
+  .modal-confirm-btn,
+  .upgrade-confirm-btn {
+    min-height: 2.75rem;
+  }
+
+  /* Share-modal copy button. */
+  .share-copy-btn {
+    min-height: 2.75rem;
+  }
+
+  /* Dashboard export buttons. */
+  .export-btn {
+    min-height: 2.75rem;
+  }
+
+  /* Detail-view delete outline button. */
+  .danger-outline-btn {
+    min-height: 2.75rem;
+  }
+
+  /* Full-width primary submit buttons (create profile, unlock, login, etc.). */
+  .primary-btn {
+    min-height: 2.75rem;
   }
 }
 

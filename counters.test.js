@@ -30,6 +30,7 @@ const {
   accentFor,
   formatTime,
   hashPIN,
+  isQuotaError,
 } = require("./counters.js");
 
 // ---------------------------------------------------------------------------
@@ -44,6 +45,35 @@ function makeStore(initial = {}) {
     removeItem: (k) => { map.delete(k); },
     clear: () => { map.clear(); },
     _map: map,
+  };
+}
+
+// Returns a store that throws a QuotaExceededError on the first `failCount`
+// setItem calls, then succeeds normally afterwards.
+function makeQuotaStore(failCount = 1, initial = {}) {
+  const base = makeStore(initial);
+  let failures = failCount;
+  return {
+    ...base,
+    setItem(k, v) {
+      if (failures > 0) {
+        failures--;
+        const err = new DOMException("QuotaExceededError", "QuotaExceededError");
+        throw err;
+      }
+      base.setItem(k, v);
+    },
+  };
+}
+
+// Returns a store that always throws a QuotaExceededError on setItem.
+function makeAlwaysQuotaStore(initial = {}) {
+  const base = makeStore(initial);
+  return {
+    ...base,
+    setItem() {
+      throw new DOMException("QuotaExceededError", "QuotaExceededError");
+    },
   };
 }
 
@@ -257,6 +287,120 @@ describe("loadCounters / saveCounters", () => {
     saveCounters("prof-b", p2, store);
     assert.equal(loadCounters("prof-a", store)[0].name, "Alpha");
     assert.equal(loadCounters("prof-b", store)[0].name, "Beta");
+  });
+});
+
+// ---------------------------------------------------------------------------
+// isQuotaError
+// ---------------------------------------------------------------------------
+
+describe("isQuotaError", () => {
+  it("recognises a DOMException named QuotaExceededError", () => {
+    const err = new DOMException("quota", "QuotaExceededError");
+    assert.ok(isQuotaError(err));
+  });
+
+  it("recognises an Error with code 22 (old WebKit)", () => {
+    const err = Object.assign(new Error("quota"), { code: 22 });
+    assert.ok(isQuotaError(err));
+  });
+
+  it("recognises an Error named QuotaExceededError", () => {
+    const err = Object.assign(new Error("quota"), { name: "QuotaExceededError" });
+    assert.ok(isQuotaError(err));
+  });
+
+  it("returns false for a generic Error", () => {
+    assert.ok(!isQuotaError(new Error("something else")));
+  });
+
+  it("returns false for non-Error values", () => {
+    assert.ok(!isQuotaError(null));
+    assert.ok(!isQuotaError("string"));
+    assert.ok(!isQuotaError(42));
+  });
+});
+
+// ---------------------------------------------------------------------------
+// saveCounters — quota recovery
+// ---------------------------------------------------------------------------
+
+describe("saveCounters quota recovery", () => {
+  function makeCounter(id, historyLength) {
+    return {
+      id,
+      name: id,
+      count: historyLength,
+      history: Array.from({ length: historyLength }, (_, i) => ({ delta: 1, at: i })),
+    };
+  }
+
+  it("succeeds without trimming when no quota error occurs", () => {
+    const store = makeStore();
+    const counters = [makeCounter("a", 10)];
+    assert.doesNotThrow(() => saveCounters("p1", counters, store));
+    const saved = JSON.parse(store.getItem(storageKey("p1")));
+    assert.equal(saved.counters[0].history.length, 10);
+  });
+
+  it("trims history and retries on first quota error", () => {
+    // Fails once, then succeeds — simulates storage almost full.
+    const store = makeQuotaStore(1);
+    const counters = [makeCounter("a", HISTORY_STORE_LIMIT)];
+    assert.doesNotThrow(() => saveCounters("p1", counters, store));
+    const saved = JSON.parse(store.getItem(storageKey("p1")));
+    // After trim, history should be at most half of HISTORY_STORE_LIMIT.
+    assert.ok(saved.counters[0].history.length <= Math.floor(HISTORY_STORE_LIMIT / 2));
+  });
+
+  it("keeps the most-recent history entries after trimming", () => {
+    const store = makeQuotaStore(1);
+    const counters = [makeCounter("a", 10)];
+    saveCounters("p1", counters, store);
+    const saved = JSON.parse(store.getItem(storageKey("p1")));
+    const kept = saved.counters[0].history;
+    // The most recent entry (at = 9) must be present; early entries may be dropped.
+    assert.equal(kept[kept.length - 1].at, 9);
+  });
+
+  it("throws a descriptive error when quota is exceeded even after trimming", () => {
+    const store = makeAlwaysQuotaStore();
+    const counters = [makeCounter("a", HISTORY_STORE_LIMIT)];
+    assert.throws(
+      () => saveCounters("p1", counters, store),
+      /Storage quota exceeded/
+    );
+  });
+
+  it("rethrows non-quota errors without attempting trim", () => {
+    const nonQuotaErr = new Error("disk full");
+    const store = {
+      ...makeStore(),
+      setItem() { throw nonQuotaErr; },
+    };
+    assert.throws(() => saveCounters("p1", [], store), (err) => err === nonQuotaErr);
+  });
+});
+
+// ---------------------------------------------------------------------------
+// saveMeta — quota handling
+// ---------------------------------------------------------------------------
+
+describe("saveMeta quota handling", () => {
+  it("does not throw on non-quota write errors", () => {
+    const store = {
+      ...makeStore(),
+      setItem() { throw new Error("some other error"); },
+    };
+    assert.doesNotThrow(() => saveMeta({ version: 1, profiles: [] }, store));
+  });
+
+  it("rethrows QuotaExceededError so callers can surface it", () => {
+    const store = makeAlwaysQuotaStore();
+    assert.throws(
+      () => saveMeta({ version: 1, profiles: [] }, store),
+      (err) => isQuotaError(err)
+    );
   });
 });
 

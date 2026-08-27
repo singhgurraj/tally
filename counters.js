@@ -88,6 +88,20 @@ function repairCounterNames(list) {
   });
 }
 
+// ─── Storage helpers ──────────────────────────────────────────────────────────
+
+// QuotaExceededError is thrown as a DOMException in browsers but appears as a
+// plain Error with code 22 in some environments (e.g. Safari private mode).
+// NS_ERROR_DOM_QUOTA_REACHED is the Firefox variant of the same condition.
+function isQuotaError(err) {
+  if (!(err instanceof Error)) return false;
+  if (err instanceof DOMException) {
+    return err.name === "QuotaExceededError" || err.name === "NS_ERROR_DOM_QUOTA_REACHED";
+  }
+  // Older WebKit surfaces quota errors as a generic Error with code 22.
+  return err.code === 22 || err.name === "QuotaExceededError";
+}
+
 // ─── Counter storage ──────────────────────────────────────────────────────────
 
 function loadCounters(profileId, store) {
@@ -128,15 +142,42 @@ function loadCounters(profileId, store) {
   }
 }
 
-// Throws on storage errors (e.g. quota exceeded).  Callers are responsible
-// for catching and surfacing a storage-warning to the user.
+// Saves counters durably, with one automatic recovery attempt on quota overflow.
+//
+// On first QuotaExceededError the function trims each counter's history to at
+// most half of HISTORY_STORE_LIMIT and retries.  If the write still fails after
+// trimming (storage is too full even for the stripped payload), a descriptive
+// error is thrown so callers can surface a visible warning to the user.
+//
+// Non-quota write errors (e.g. localStorage disabled) are rethrown immediately
+// without the trim attempt.
 function saveCounters(profileId, counters, store) {
   store ??= globalThis.localStorage;
   if (!profileId || !store) throw new Error("Cannot save: no active profile");
-  store.setItem(
-    storageKey(profileId),
-    JSON.stringify({ version: SCHEMA_VERSION, counters })
-  );
+
+  const key = storageKey(profileId);
+
+  try {
+    store.setItem(key, JSON.stringify({ version: SCHEMA_VERSION, counters }));
+  } catch (err) {
+    if (!isQuotaError(err)) throw err;
+
+    // Trim history to half the store limit and retry once.
+    const trimLimit = Math.floor(HISTORY_STORE_LIMIT / 2);
+    const trimmed = counters.map((c) => ({
+      ...c,
+      history: Array.isArray(c.history) ? c.history.slice(-trimLimit) : [],
+    }));
+
+    try {
+      store.setItem(key, JSON.stringify({ version: SCHEMA_VERSION, counters: trimmed }));
+    } catch {
+      throw new Error(
+        "Storage quota exceeded. Counter history has been trimmed but the data is still too large to save. " +
+        "Free up browser storage or export your data to recover."
+      );
+    }
+  }
 }
 
 // ─── Profile registry storage ─────────────────────────────────────────────────
@@ -162,12 +203,17 @@ function loadMeta(store) {
   }
 }
 
+// Quota errors are rethrown so callers can surface them to the user — silently
+// losing the profile list is worse than a visible error.  Other storage errors
+// (e.g. localStorage disabled) are logged but not propagated, since the app can
+// continue operating with an in-memory profile list in those environments.
 function saveMeta(meta, store) {
   store ??= globalThis.localStorage;
   if (!store) return;
   try {
     store.setItem(META_KEY, JSON.stringify(meta));
   } catch (err) {
+    if (isQuotaError(err)) throw err;
     console.error("Tally: failed to save profile list", err);
   }
 }
@@ -255,5 +301,6 @@ if (typeof module !== "undefined") {
     accentFor,
     formatTime,
     hashPIN,
+    isQuotaError,
   };
 }
