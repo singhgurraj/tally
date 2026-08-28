@@ -3,6 +3,52 @@
 // Utility globals from counters.js: accentFor, formatTime, HISTORY_DISPLAY_LIMIT,
 // HISTORY_STORE_LIMIT.  Chart functions from dashboard.js: renderDashboard, exportData.
 
+// ─── Theme management ──────────────────────────────────────────────────────────
+// Three states: "system" (follow OS), "light", "dark".
+// Stored in localStorage so it survives page reloads.
+// The active state is applied as data-theme on <html>; CSS variables do the rest.
+// Any new UI element that uses CSS vars inherits the correct colours automatically.
+
+const THEME_KEY = "tally-theme";
+const THEME_CYCLE = ["system", "light", "dark"];
+const THEME_LABELS = { system: "◐ Auto", light: "☀ Light", dark: "☾ Dark" };
+
+function getStoredTheme() {
+  const stored = localStorage.getItem(THEME_KEY);
+  return THEME_CYCLE.includes(stored) ? stored : "system";
+}
+
+function applyTheme(theme) {
+  const html = document.documentElement;
+  if (theme === "system") {
+    html.removeAttribute("data-theme");
+  } else {
+    html.setAttribute("data-theme", theme);
+  }
+  const btn = document.getElementById("theme-toggle-btn");
+  if (btn) btn.textContent = THEME_LABELS[theme];
+}
+
+function cycleTheme() {
+  const current = getStoredTheme();
+  const next = THEME_CYCLE[(THEME_CYCLE.indexOf(current) + 1) % THEME_CYCLE.length];
+  localStorage.setItem(THEME_KEY, next);
+  applyTheme(next);
+}
+
+// Apply on load.
+applyTheme(getStoredTheme());
+
+// Re-apply when the OS preference changes (only matters in "system" mode —
+// CSS handles the actual colour switch, but we need to keep the button label fresh).
+window.matchMedia("(prefers-color-scheme: dark)").addEventListener("change", () => {
+  if (getStoredTheme() === "system") applyTheme("system");
+});
+
+document.getElementById("theme-toggle-btn").addEventListener("click", cycleTheme);
+
+// ──────────────────────────────────────────────────────────────────────────────
+
 const FREE_COUNTER_LIMIT = 3;
 
 // Authenticated user.  null = not logged in.
@@ -892,6 +938,233 @@ window.addEventListener("beforeunload", () => {
 });
 
 window.addEventListener("hashchange", () => renderApp({ moveFocus: true }));
+
+// ─── Reminders ─────────────────────────────────────────────────────────────────
+// Reminders are stored in localStorage and scheduled with setTimeout.
+// Drift-free design: every schedule() call computes the delay from the absolute
+// wall-clock target at that moment — never from an accumulated previous delay.
+// On visibilitychange, all reminders are rescheduled so throttled timers catch up.
+
+const REMINDERS_KEY = "tally-reminders";
+const _rTimers = new Map(); // reminder id → setTimeout handle
+
+function _loadReminders() {
+  try { return JSON.parse(localStorage.getItem(REMINDERS_KEY) || "[]"); }
+  catch { return []; }
+}
+
+function _saveReminders(list) {
+  localStorage.setItem(REMINDERS_KEY, JSON.stringify(list));
+}
+
+function _fmtTime12(h, m) {
+  const period = h >= 12 ? "PM" : "AM";
+  return `${h % 12 || 12}:${String(m).padStart(2, "0")} ${period}`;
+}
+
+function _fmtInterval(mins) {
+  return (mins >= 60 && mins % 60 === 0) ? `${mins / 60} hr` : `${mins} min`;
+}
+
+function _reminderDesc(r) {
+  return r.type === "daily"
+    ? `Daily at ${_fmtTime12(r.hour, r.minute)}`
+    : `Every ${_fmtInterval(r.intervalMinutes)}`;
+}
+
+// Returns ms until the next fire — always ≥ 0, always computed fresh from Date.now().
+function _msUntilFire(r) {
+  if (r.type === "daily") {
+    const target = new Date();
+    target.setHours(r.hour, r.minute, 0, 0);
+    if (target.getTime() <= Date.now()) target.setDate(target.getDate() + 1);
+    return Math.max(0, target.getTime() - Date.now());
+  }
+  // Interval: fire at lastFired + intervalMs; if overdue fire in 5 s.
+  if (!r.lastFired) return r.intervalMinutes * 60_000;
+  const next = r.lastFired + r.intervalMinutes * 60_000;
+  return Math.max(0, next - Date.now());
+}
+
+function _scheduleReminder(r) {
+  clearTimeout(_rTimers.get(r.id));
+  _rTimers.delete(r.id);
+  if (!r.enabled) return;
+  const handle = setTimeout(() => _fireReminder(r.id), _msUntilFire(r));
+  _rTimers.set(r.id, handle);
+}
+
+function _fireReminder(id) {
+  const list = _loadReminders();
+  const r = list.find(x => x.id === id);
+  if (!r || !r.enabled) return;
+
+  r.lastFired = Date.now();
+  _saveReminders(list);
+
+  const title = r.label || "Tally reminder";
+  const body = _reminderDesc(r);
+
+  if (typeof Notification !== "undefined" && Notification.permission === "granted") {
+    try { new Notification(title, { body, tag: `tally-${id}` }); } catch { /* non-critical */ }
+  }
+  showToast(`🔔 ${title} — ${body}`, { duration: 8000 });
+
+  // Reschedule: computed from current wall time so no drift accumulates.
+  _scheduleReminder(r);
+}
+
+function _scheduleAll() {
+  _loadReminders().forEach(_scheduleReminder);
+}
+
+// Recover from browser timer throttling on hidden tabs.
+document.addEventListener("visibilitychange", () => {
+  if (document.visibilityState === "visible") _scheduleAll();
+});
+
+// ── Reminders UI ────────────────────────────────────────────────────────────────
+
+const remindersModalEl   = document.getElementById("reminders-modal");
+const remindersBtnEl     = document.getElementById("reminders-btn");
+const remindersListEl    = document.getElementById("reminders-list");
+const remindersEmptyEl   = document.getElementById("reminders-empty");
+const remindersHintEl    = document.getElementById("reminders-notif-hint");
+const addReminderFormEl  = document.getElementById("add-reminder-form");
+const rTypeSelectEl      = document.getElementById("reminder-type-select");
+const rDailyFieldsEl     = document.getElementById("reminder-daily-fields");
+const rIntervalFieldsEl  = document.getElementById("reminder-interval-fields");
+const rTimeEl            = document.getElementById("reminder-time");
+const rIntervalNumEl     = document.getElementById("reminder-interval-num");
+const rIntervalUnitEl    = document.getElementById("reminder-interval-unit");
+const rLabelEl           = document.getElementById("reminder-label");
+
+function _escHtml(s) {
+  return s.replace(/&/g, "&amp;").replace(/</g, "&lt;").replace(/>/g, "&gt;").replace(/"/g, "&quot;");
+}
+
+function _renderRemindersList() {
+  const list = _loadReminders();
+  remindersEmptyEl.hidden = list.length > 0;
+  remindersListEl.innerHTML = "";
+  list.forEach(r => {
+    const li = document.createElement("li");
+    li.className = "reminder-item";
+    li.dataset.id = r.id;
+    li.innerHTML = `
+      <div class="reminder-item-info">
+        ${r.label ? `<span class="reminder-item-name">${_escHtml(r.label)}</span>` : ""}
+        <span class="reminder-item-desc">${_escHtml(_reminderDesc(r))}</span>
+      </div>
+      <div class="reminder-item-actions">
+        <label class="reminder-toggle" aria-label="${r.enabled ? "Disable" : "Enable"} reminder">
+          <input type="checkbox" class="reminder-enable-cb" ${r.enabled ? "checked" : ""}>
+          <span class="reminder-toggle-track"></span>
+        </label>
+        <button type="button" class="reminder-del-btn" aria-label="Delete reminder">&times;</button>
+      </div>`;
+    remindersListEl.appendChild(li);
+  });
+}
+
+function _updateNotifHint() {
+  if (typeof Notification === "undefined" || Notification.permission === "denied") {
+    remindersHintEl.textContent = "Browser notifications are blocked. Enable them in site settings to receive alerts.";
+    remindersHintEl.hidden = false;
+  } else {
+    remindersHintEl.hidden = true;
+  }
+}
+
+async function _ensureNotifPermission() {
+  if (typeof Notification !== "undefined" && Notification.permission === "default") {
+    await Notification.requestPermission();
+  }
+  _updateNotifHint();
+}
+
+if (remindersBtnEl) {
+  remindersBtnEl.addEventListener("click", () => {
+    _renderRemindersList();
+    _updateNotifHint();
+    remindersModalEl.showModal();
+  });
+}
+
+document.getElementById("reminders-close-btn")?.addEventListener("click", () => remindersModalEl.close());
+
+remindersModalEl?.addEventListener("click", e => {
+  if (e.target === remindersModalEl) remindersModalEl.close();
+});
+
+rTypeSelectEl?.addEventListener("change", () => {
+  const isDaily = rTypeSelectEl.value === "daily";
+  rDailyFieldsEl.hidden = !isDaily;
+  rIntervalFieldsEl.hidden = isDaily;
+});
+
+// Toggle enable/disable via the switch.
+remindersListEl?.addEventListener("change", e => {
+  const cb = e.target.closest(".reminder-enable-cb");
+  if (!cb) return;
+  const id = cb.closest("[data-id]").dataset.id;
+  const list = _loadReminders();
+  const r = list.find(x => x.id === id);
+  if (!r) return;
+  r.enabled = cb.checked;
+  _saveReminders(list);
+  _scheduleReminder(r);
+  cb.closest("label").setAttribute("aria-label", (r.enabled ? "Disable" : "Enable") + " reminder");
+});
+
+// Delete.
+remindersListEl?.addEventListener("click", e => {
+  const btn = e.target.closest(".reminder-del-btn");
+  if (!btn) return;
+  const id = btn.closest("[data-id]").dataset.id;
+  _saveReminders(_loadReminders().filter(x => x.id !== id));
+  clearTimeout(_rTimers.get(id));
+  _rTimers.delete(id);
+  _renderRemindersList();
+});
+
+// Add new reminder.
+addReminderFormEl?.addEventListener("submit", async e => {
+  e.preventDefault();
+  await _ensureNotifPermission();
+
+  const type = rTypeSelectEl.value;
+  const r = {
+    id: "r_" + Math.random().toString(36).slice(2, 9),
+    label: rLabelEl.value.trim(),
+    type,
+    enabled: true,
+    lastFired: null,
+  };
+
+  if (type === "daily") {
+    const parts = rTimeEl.value.split(":");
+    r.hour   = Number(parts[0]);
+    r.minute = Number(parts[1]);
+  } else {
+    const mins = Number(rIntervalNumEl.value) * Number(rIntervalUnitEl.value);
+    if (!mins || mins < 1) {
+      showToast("Interval must be at least 1 minute.", { error: true });
+      return;
+    }
+    r.intervalMinutes = mins;
+  }
+
+  const list = _loadReminders();
+  list.push(r);
+  _saveReminders(list);
+  _scheduleReminder(r);
+  _renderRemindersList();
+  rLabelEl.value = "";
+});
+
+// Boot: restore any previously saved reminders.
+_scheduleAll();
 
 // ─── Boot ──────────────────────────────────────────────────────────────────────
 

@@ -57,6 +57,7 @@
           <div class="profile-bar-actions">
             <span id="premium-badge" class="premium-badge" hidden>PRO</span>
             <button type="button" id="home-undo-btn" class="dashboard-link" aria-label="Undo last tap" title="Undo (Ctrl+Z)" hidden>&#8617; Undo</button>
+            <button type="button" id="reminders-btn" class="dashboard-link" title="Reminders">Remind</button>
             <a href="#/dashboard" class="dashboard-link">Charts</a>
             <button type="button" id="logout-btn" class="lock-btn">Log out</button>
           </div>
@@ -188,6 +189,61 @@
 
   <!-- Toast: visible to all users; assertive for errors, polite otherwise. -->
   <div id="toast" hidden></div>
+
+  <button id="theme-toggle-btn" aria-label="Toggle colour theme" title="Toggle colour theme"></button>
+
+  <dialog id="reminders-modal" aria-labelledby="reminders-modal-title">
+    <div class="reminders-header">
+      <h2 id="reminders-modal-title">Reminders</h2>
+      <button type="button" id="reminders-close-btn" class="reminders-close-btn" aria-label="Close">&times;</button>
+    </div>
+
+    <p id="reminders-notif-hint" class="reminders-hint" hidden></p>
+
+    <ul id="reminders-list" class="reminders-list" role="list"></ul>
+    <p id="reminders-empty" class="reminders-empty" hidden>No reminders yet — add one below.</p>
+
+    <div class="reminders-divider" role="separator"></div>
+
+    <form id="add-reminder-form" novalidate>
+      <h3 class="reminders-add-heading">Add reminder</h3>
+
+      <div class="field">
+        <label for="reminder-type-select">Type</label>
+        <select id="reminder-type-select">
+          <option value="daily">Daily at a time</option>
+          <option value="interval">On an interval</option>
+        </select>
+      </div>
+
+      <div id="reminder-daily-fields">
+        <div class="field">
+          <label for="reminder-time">Time</label>
+          <input type="time" id="reminder-time" value="09:00">
+        </div>
+      </div>
+
+      <div id="reminder-interval-fields" hidden>
+        <div class="field">
+          <label>Repeat every</label>
+          <div class="reminder-interval-row">
+            <input type="number" id="reminder-interval-num" min="1" max="999" value="2" class="reminder-interval-num">
+            <select id="reminder-interval-unit">
+              <option value="60">hours</option>
+              <option value="1">minutes</option>
+            </select>
+          </div>
+        </div>
+      </div>
+
+      <div class="field">
+        <label for="reminder-label">Label <span class="label-hint">(optional)</span></label>
+        <input type="text" id="reminder-label" placeholder="e.g. Morning check-in" maxlength="40">
+      </div>
+
+      <button type="submit" class="primary-btn">Add reminder</button>
+    </form>
+  </dialog>
 
   <script src="/node_modules/chart.js/dist/chart.umd.min.js"></script>
   <script src="counters.js"></script>

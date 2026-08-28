@@ -55,6 +55,32 @@
   }
 }
 
+/* Manual theme overrides — set via data-theme on <html> by theme.js.
+   These win over the media query. Every CSS variable lives here (not
+   scattered per-component), so any new element that reaches for a var
+   automatically gets the right value in both modes. */
+[data-theme="light"] {
+  color-scheme: light;
+  --bg: #f4f4f6;
+  --surface: #ffffff;
+  --text: #1a1a1a;
+  --muted: #74747c;
+  --border: #e5e5e9;
+  --shadow: 0 1px 2px rgba(20, 20, 30, 0.05), 0 1px 8px rgba(20, 20, 30, 0.04);
+  --shadow-hover: 0 2px 4px rgba(20, 20, 30, 0.06), 0 6px 16px rgba(20, 20, 30, 0.08);
+}
+
+[data-theme="dark"] {
+  color-scheme: dark;
+  --bg: #131314;
+  --surface: #1e1f22;
+  --text: #f1f1f1;
+  --muted: #97979f;
+  --border: #303136;
+  --shadow: 0 1px 2px rgba(0, 0, 0, 0.2), 0 1px 8px rgba(0, 0, 0, 0.18);
+  --shadow-hover: 0 2px 4px rgba(0, 0, 0, 0.25), 0 8px 20px rgba(0, 0, 0, 0.3);
+}
+
 * {
   box-sizing: border-box;
 }
@@ -353,7 +379,8 @@ h1 {
 #delete-modal::backdrop,
 #share-modal::backdrop,
 #join-modal::backdrop,
-#upgrade-modal::backdrop {
+#upgrade-modal::backdrop,
+#reminders-modal::backdrop {
   background: var(--modal-backdrop);
 }
 
@@ -1393,6 +1420,321 @@ h1 {
   /* Controls drop under the name, keeping dot column empty for alignment. */
   .counter-controls { grid-column: 2; grid-row: 2; }
 
+}
+
+/* ─── Reminders modal ───────────────────────────────────────────────────────── */
+
+#reminders-modal {
+  border: 1px solid var(--border);
+  border-radius: var(--radius-lg);
+  background: var(--surface);
+  color: var(--text);
+  padding: 1.5rem;
+  width: min(90vw, 400px);
+  max-height: min(90vh, 680px);
+  overflow-y: auto;
+  box-shadow: var(--shadow-hover);
+}
+
+.reminders-header {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  margin-bottom: 1rem;
+}
+
+.reminders-header h2 {
+  font-size: 1.1rem;
+  font-weight: 700;
+  letter-spacing: -0.01em;
+  margin: 0;
+}
+
+.reminders-close-btn {
+  border: none;
+  background: transparent;
+  color: var(--muted);
+  font-size: 1.4rem;
+  cursor: pointer;
+  padding: 0.2rem 0.4rem;
+  border-radius: var(--radius-sm);
+  line-height: 1;
+  transition: color 120ms ease, background 120ms ease;
+}
+
+.reminders-close-btn:hover {
+  color: var(--text);
+  background: var(--border);
+}
+
+.reminders-hint {
+  font-size: 0.8rem;
+  color: var(--text);
+  margin: 0 0 0.85rem;
+  padding: 0.6rem 0.75rem;
+  border: 1px solid var(--warning);
+  border-radius: var(--radius-input);
+  background: color-mix(in srgb, var(--warning) 12%, transparent);
+  line-height: 1.4;
+}
+
+.reminders-list {
+  list-style: none;
+  margin: 0 0 0.5rem;
+  padding: 0;
+  display: flex;
+  flex-direction: column;
+  gap: 0.4rem;
+}
+
+.reminder-item {
+  display: flex;
+  align-items: center;
+  gap: 0.75rem;
+  padding: 0.65rem 0.9rem;
+  background: var(--bg);
+  border: 1px solid var(--border);
+  border-radius: var(--radius-input);
+}
+
+.reminder-item-info {
+  flex: 1;
+  min-width: 0;
+  display: flex;
+  flex-direction: column;
+  gap: 0.1rem;
+}
+
+.reminder-item-name {
+  font-weight: 500;
+  font-size: 0.9rem;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.reminder-item-desc {
+  font-size: 0.8rem;
+  color: var(--muted);
+}
+
+.reminder-item-actions {
+  display: flex;
+  align-items: center;
+  gap: 0.5rem;
+  flex-shrink: 0;
+}
+
+/* Toggle switch */
+.reminder-toggle {
+  position: relative;
+  display: inline-flex;
+  align-items: center;
+  cursor: pointer;
+  width: 34px;
+  height: 20px;
+  flex-shrink: 0;
+}
+
+.reminder-toggle input {
+  position: absolute;
+  opacity: 0;
+  width: 0;
+  height: 0;
+}
+
+.reminder-toggle-track {
+  display: block;
+  width: 34px;
+  height: 20px;
+  border-radius: 99px;
+  background: var(--border);
+  transition: background 150ms ease;
+  position: relative;
+}
+
+.reminder-toggle-track::after {
+  content: "";
+  position: absolute;
+  top: 2px;
+  left: 2px;
+  width: 16px;
+  height: 16px;
+  border-radius: 50%;
+  background: white;
+  transition: left 150ms ease;
+}
+
+.reminder-toggle input:checked + .reminder-toggle-track {
+  background: var(--accent);
+}
+
+.reminder-toggle input:checked + .reminder-toggle-track::after {
+  left: 16px;
+}
+
+.reminder-toggle input:focus-visible + .reminder-toggle-track {
+  outline: 2px solid var(--accent);
+  outline-offset: 2px;
+}
+
+.reminder-del-btn {
+  border: none;
+  background: transparent;
+  color: var(--muted);
+  font-size: 1.2rem;
+  cursor: pointer;
+  padding: 0.2rem 0.35rem;
+  border-radius: var(--radius-sm);
+  line-height: 1;
+  transition: color 120ms ease, background 120ms ease;
+}
+
+.reminder-del-btn:hover {
+  color: var(--danger);
+  background: color-mix(in srgb, var(--danger) 12%, transparent);
+}
+
+.reminders-empty {
+  color: var(--muted);
+  font-size: 0.875rem;
+  margin: 0 0 0.5rem;
+  text-align: center;
+  padding: 1.25rem 1rem;
+  border: 1.5px dashed var(--border);
+  border-radius: var(--radius-input);
+}
+
+.reminders-divider {
+  height: 1px;
+  background: var(--border);
+  margin: 1rem 0;
+}
+
+.reminders-add-heading {
+  font-size: 0.875rem;
+  font-weight: 700;
+  color: var(--muted);
+  text-transform: uppercase;
+  letter-spacing: 0.04em;
+  margin: 0 0 0.85rem;
+}
+
+/* Select and time inputs inside the reminders form */
+#reminders-modal .field select,
+#reminder-time {
+  width: 100%;
+  padding: 0.65rem 0.85rem;
+  border: 1px solid var(--border);
+  border-radius: var(--radius-input);
+  background: var(--surface);
+  color: var(--text);
+  font-size: 1rem;
+  transition: var(--transition-input);
+}
+
+#reminders-modal .field select:focus-visible,
+#reminder-time:focus-visible {
+  outline: none;
+  border-color: var(--accent);
+  box-shadow: 0 0 0 3px color-mix(in srgb, var(--accent) 20%, transparent);
+}
+
+.reminder-interval-row {
+  display: flex;
+  gap: 0.4rem;
+}
+
+.reminder-interval-num {
+  width: 5.5rem;
+  padding: 0.65rem 0.75rem;
+  border: 1px solid var(--border);
+  border-radius: var(--radius-input);
+  background: var(--surface);
+  color: var(--text);
+  font-size: 1rem;
+  flex-shrink: 0;
+  transition: var(--transition-input);
+}
+
+.reminder-interval-num:focus-visible {
+  outline: none;
+  border-color: var(--accent);
+  box-shadow: 0 0 0 3px color-mix(in srgb, var(--accent) 20%, transparent);
+}
+
+.reminder-interval-row select {
+  flex: 1;
+  padding: 0.65rem 0.75rem;
+  border: 1px solid var(--border);
+  border-radius: var(--radius-input);
+  background: var(--surface);
+  color: var(--text);
+  font-size: 1rem;
+}
+
+@media (pointer: coarse) {
+  .reminder-del-btn,
+  .reminders-close-btn {
+    min-width: 2.75rem;
+    min-height: 2.75rem;
+  }
+
+  .reminder-toggle {
+    width: 42px;
+    height: 26px;
+  }
+
+  .reminder-toggle-track {
+    width: 42px;
+    height: 26px;
+  }
+
+  .reminder-toggle-track::after {
+    width: 22px;
+    height: 22px;
+  }
+
+  .reminder-toggle input:checked + .reminder-toggle-track::after {
+    left: 18px;
+  }
+}
+
+/* ─── Theme toggle ──────────────────────────────────────────────────────────── */
+/* Fixed to the viewport so it's always reachable regardless of which view is
+   active. New views and screens need no changes — the button is always there. */
+
+#theme-toggle-btn {
+  position: fixed;
+  top: 1rem;
+  right: 1rem;
+  z-index: 100;
+  border: 1px solid var(--border);
+  background: var(--surface);
+  color: var(--muted);
+  border-radius: var(--radius-md);
+  padding: 0.3rem 0.55rem;
+  font-size: 0.8rem;
+  font-weight: 600;
+  cursor: pointer;
+  white-space: nowrap;
+  box-shadow: var(--shadow);
+  transition: background 120ms ease, color 120ms ease, border-color 120ms ease;
+  /* Keep it out of the way on the main content column. */
+  line-height: 1.4;
+}
+
+#theme-toggle-btn:hover {
+  background: var(--border);
+  color: var(--text);
+}
+
+/* On phones the button might overlap narrow content; nudge it inward. */
+@media (max-width: 480px) {
+  #theme-toggle-btn {
+    top: 0.6rem;
+    right: 0.6rem;
+  }
 }
 
 /* ─── Toast notification ────────────────────────────────────────────────────── */
